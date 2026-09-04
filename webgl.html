@@ -98,6 +98,10 @@
     .clock{ width:256px; }
     .clock .t{ font-size:44px; }
   }
+  @media (max-width: 700px){
+    .seg{ display:none; }
+    .panel{ width:230px; }
+  }
   @media (max-width: 940px){
     .card{ display:none; }
     .panel{ width:246px; right:16px; }
@@ -197,11 +201,26 @@ if(!gl){
   throw new Error('no webgl2');
 }
 
+/* a driver reset or a gpu switch kills the context. keep the settings and
+   come back instead of leaving a black page */
+canvas.addEventListener('webglcontextlost', e=>{
+  e.preventDefault();
+  try{ sessionStorage.setItem('lgcfg', JSON.stringify(cfg)); }catch(err){}
+  document.getElementById('dead').style.display = 'grid';
+  document.getElementById('dead').innerHTML = '<div><b>GPU context lost</b>Restoring…</div>';
+});
+canvas.addEventListener('webglcontextrestored', ()=> location.reload());
+
 const cfg = {
   ior: 1.52, thickness: 42, bevel: 14, dispersion: 0.10, blur: 1.6, radius: 30,
   angle: 130, rough: 0.20, spec: 1.00, refl: 0.80, shade: 0.40,
   tint: 0.04, sat: 1.30, leg: 0.20, rim: 0.45, taps: 14,
 };
+
+try{
+  const saved = sessionStorage.getItem('lgcfg');
+  if(saved){ Object.assign(cfg, JSON.parse(saved)); sessionStorage.removeItem('lgcfg'); }
+}catch(err){}
 
 const SQUIRCLE = CSS.supports('corner-shape', 'squircle') ? 4.0 : 2.0;
 
@@ -338,8 +357,8 @@ void main(){
 
   /* contact shadow, offset down and away from the light */
   vec2 sOff = vec2(-uLight.x, uLight.y)*10.0 + vec2(0.0, 10.0);
-  float ds = sdRect(q - sOff, hs, r, n);
-  float shadow = 0.45*exp(-max(ds, 0.0)/16.0) + 0.22*exp(-max(ds, 0.0)/44.0);
+  float ds = max(sdRect(q - sOff, hs, r, n), 0.0);
+  float shadow = 0.45*exp(-ds/15.0) + 0.22*exp(-ds/34.0);
 
   float cover = 1.0 - smoothstep(-1.0, 0.6, d);
   if(cover <= 0.001){
@@ -622,7 +641,7 @@ function frame(){
   gl.uniform1f(progGlass.u.uRim, cfg.rim);
   gl.uniform1i(progGlass.u.uTaps, cfg.taps|0);
 
-  const pad = Math.ceil((cfg.thickness*1.6 + cfg.blur*2 + 70)*DPR);
+  const pad = Math.ceil((cfg.thickness*1.6 + cfg.blur*2 + 120)*DPR);
 
   for(const p of panels){
     const [x, y, w, h] = p.rect;
@@ -680,6 +699,7 @@ function slider(id, key, fmt){
   const inp = document.getElementById(id);
   const out = document.getElementById('v' + id[0].toUpperCase() + id.slice(1));
   const show = ()=> out.textContent = fmt(cfg[key]);
+  inp.value = cfg[key];
   inp.addEventListener('input', ()=>{ cfg[key] = parseFloat(inp.value); show(); });
   show();
 }

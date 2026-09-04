@@ -7,8 +7,6 @@
 <style>
   :root{
     --rad-base: 28px;
-    --blur: 1.5px;
-    --sat: 170%;
     --tint: 0.08;
     --spec: 0.85;
     --shade: 0.55;
@@ -67,7 +65,7 @@
   .deco{
     position:absolute; font-size:52px; line-height:1;
     animation: float var(--fd,14s) ease-in-out infinite alternate;
-    filter: drop-shadow(0 6px 14px rgba(0,0,0,.35));
+    text-shadow: 0 6px 14px rgba(0,0,0,.35);
   }
   @keyframes float{ from{ transform: translateY(0) rotate(-6deg);} to{ transform: translateY(-26px) rotate(8deg);} }
 
@@ -124,6 +122,11 @@
   html.reduce-tr .lg::after{ opacity:.25; }
 
   .lg > *{ position:relative; z-index:3; }
+
+  /* every frame of wallpaper motion invalidates the backdrop of all eight
+     glass elements, so it is the single most expensive thing on the page */
+  html.still .blob,
+  html.still .deco{ animation: none; }
 
   .draggable{ cursor:grab; }
   .draggable:active{ cursor:grabbing; }
@@ -329,7 +332,7 @@
   </div>
 
   <div class="toolbar">
-    <div class="lg draggable pill" data-glass>Continue</div>
+    <div class="lg draggable pill" data-glass><span>Continue</span></div>
 
     <div class="lg seg draggable" data-glass>
       <button class="on">Day</button>
@@ -384,9 +387,12 @@
     <div class="togline"><span>Liquid motion</span><div class="miniswitch on" id="togMotion"><div class="k"></div></div></div>
     <div class="togline"><span>Reduce transparency</span><div class="miniswitch" id="togRT"><div class="k"></div></div></div>
 
+    <div class="grp">Performance</div>
+    <div class="togline"><span>Wallpaper motion</span><div class="miniswitch" id="togWall"><div class="k"></div></div></div>
     <div class="togline"><span>Frame rate</span><b id="fps" style="opacity:.6;font-variant-numeric:tabular-nums">--</b></div>
 
     <div class="hint">Drag any glass panel across the wallpaper. Watch the rim: it pulls in what is outside the element, splits it into colour and lights up where the surface faces the light.</div>
+    <div class="hint">Cost order, worst first: wallpaper motion repaints every panel every frame, chromatic aberration runs the displacement three times instead of once, rim glow adds a saturate and a composite.</div>
     <div class="warn">This browser cannot run SVG filters inside <code>backdrop-filter</code>. Falling back to plain blur. Use Chrome or Edge for the real thing.</div>
   </div>
 
@@ -437,6 +443,7 @@ const cfg = {
   chromatic: true,
   squircle: true,
   motion: true,
+  wallMotion: false,
 };
 
 const clamp = (v,a,b)=> v<a ? a : v>b ? b : v;
@@ -465,7 +472,8 @@ const MAX_PIXELS = 1.4e6;
 const mapCache = new Map();
 
 function bake(w, h, radius, bevel, n, lightDeg){
-  const key = [w, h, radius.toFixed(1), bevel.toFixed(1), n, lightDeg].join(':');
+  const key = [w, h, radius.toFixed(1), bevel.toFixed(1), n, lightDeg,
+               window.devicePixelRatio || 1].join(':');
   const hit = mapCache.get(key);
   if(hit) return hit;
 
@@ -598,6 +606,12 @@ const ONLY_R = '1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0';
 const ONLY_G = '0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0';
 const ONLY_B = '0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0';
 
+/* only pad by what the displacement can actually reach - a percentage
+   region makes every big panel filter twice the pixels it needs */
+function filterPad(){
+  return Math.ceil(cfg.refraction*0.6 + cfg.blur*3 + 8);
+}
+
 function filterMarkup(id, maps, w, h){
   /* negative scale = the rim pulls the surroundings inward,
      the way a thick convex edge really behaves */
@@ -636,17 +650,14 @@ function filterMarkup(id, maps, w, h){
     body += `
       <feImage href="${maps.rim}" x="0" y="0" width="${w}" height="${h}" preserveAspectRatio="none" result="ring"/>
       <feColorMatrix in="${last}" type="saturate" values="${(1 + cfg.rim*2.4).toFixed(2)}" result="vivid"/>
-      <feGaussianBlur in="vivid" stdDeviation="1.4" result="vividSoft"/>
-      <feComposite in="vividSoft" in2="ring" operator="in" result="glow"/>
+      <feComposite in="vivid" in2="ring" operator="in" result="glow"/>
       <feComposite in="glow" in2="${last}" operator="arithmetic" k1="0" k2="${(cfg.rim*0.7).toFixed(2)}" k3="1" k4="0" result="lit"/>`;
     last = 'lit';
   }
 
   /* SVG takes the last primitive in document order as the result */
 
-  /* only pad by what the displacement can actually reach - a percentage
-     region makes every big panel filter twice the pixels it needs */
-  const pad = Math.ceil(cfg.refraction*0.6 + cfg.blur*3 + 8);
+  const pad = filterPad();
   return `<filter id="${id}" filterUnits="userSpaceOnUse"
     x="${-pad}" y="${-pad}" width="${w + pad*2}" height="${h + pad*2}"
     color-interpolation-filters="sRGB">${body}</filter>`;
@@ -665,6 +676,7 @@ class Glass{
     this.node.id = this.id;
     defs.appendChild(this.node);
     this.geoSig = '';
+    this.shapeSig = '';
     this.spring = { sx:1, sy:1, vx:0, vy:0, tx:1, ty:1 };
     this.bindPointer();
     this.sync(true);
@@ -707,12 +719,62 @@ class Glass{
       return;
     }
     m = m || this.metrics();
-    const fresh = new DOMParser()
-      .parseFromString(`<svg xmlns="${NS}">${filterMarkup(this.id, this.maps, m.w, m.h)}</svg>`, 'image/svg+xml')
-      .querySelector('filter');
-    this.node.replaceWith(fresh);
-    this.node = fresh;
 
+    /* the two feImage nodes carry data-url pngs. replacing the filter node
+       makes chrome decode them again, so only do it when the chain actually
+       changes shape or the maps were re-baked */
+    const shape = [
+      cfg.chromatic && cfg.aberration > 0,
+      cfg.legibility > 0,
+      cfg.rim > 0,
+      this.geoSig,
+    ].join('|');
+
+    if(shape !== this.shapeSig){
+      this.shapeSig = shape;
+      const fresh = new DOMParser()
+        .parseFromString(`<svg xmlns="${NS}">${filterMarkup(this.id, this.maps, m.w, m.h)}</svg>`, 'image/svg+xml')
+        .querySelector('filter');
+      this.node.replaceWith(fresh);
+      this.node = fresh;
+    } else {
+      this.tune(m);
+    }
+    this.paint();
+  }
+
+  tune(m){
+    const f = this.node;
+    const pad = filterPad();
+    f.setAttribute('x', -pad);
+    f.setAttribute('y', -pad);
+    f.setAttribute('width',  m.w + pad*2);
+    f.setAttribute('height', m.h + pad*2);
+
+    const s = -cfg.refraction, ab = cfg.aberration;
+    const maps = f.querySelectorAll('feDisplacementMap');
+    if(maps.length === 3){
+      maps[0].setAttribute('scale', s*(1 + ab));
+      maps[1].setAttribute('scale', s);
+      maps[2].setAttribute('scale', s*(1 - ab));
+    } else if(maps.length === 1){
+      maps[0].setAttribute('scale', s);
+    }
+
+    const slope = (1 - cfg.legibility*0.42).toFixed(3);
+    const lift  = (cfg.legibility*0.07).toFixed(3);
+    f.querySelectorAll('feComponentTransfer > *').forEach(fn=>{
+      fn.setAttribute('slope', slope);
+      fn.setAttribute('intercept', lift);
+    });
+
+    const vivid = f.querySelector('feColorMatrix[type="saturate"]');
+    if(vivid) vivid.setAttribute('values', (1 + cfg.rim*2.4).toFixed(2));
+    const mixIn = f.querySelector('feComposite[result="lit"]');
+    if(mixIn) mixIn.setAttribute('k2', (cfg.rim*0.7).toFixed(2));
+  }
+
+  paint(){
     const bf = `blur(${cfg.blur}px) saturate(${cfg.saturation}%) url(#${this.id})`;
     this.el.style.backdropFilter = bf;
     this.el.style.webkitBackdropFilter = bf;
@@ -801,8 +863,6 @@ document.querySelectorAll('[data-glass]').forEach(el=> sheets.push(new Glass(el)
 applyCss();
 
 function applyCss(){
-  root.style.setProperty('--blur', cfg.blur + 'px');
-  root.style.setProperty('--sat', cfg.saturation + '%');
   root.style.setProperty('--tint', cfg.tint);
   root.style.setProperty('--rad-base', cfg.radius + 'px');
   root.style.setProperty('--spec', cfg.spec);
@@ -888,7 +948,7 @@ slider('ref',   'refraction', 2, int1);
 slider('bev',   'bevel',      3, int1);
 slider('ab',    'aberration', 2, dec2);
 slider('rim',   'rim',        2, dec2);
-slider('blur',  'blur',       1, v=> v.toFixed(1));
+slider('blur',  'blur',       2, v=> v.toFixed(1));
 slider('leg',   'legibility', 2, dec2);
 slider('light', 'light',      3, int1);
 slider('spec',  'spec',       1, dec2);
@@ -911,6 +971,8 @@ toggle('togChroma', v=>{ cfg.chromatic = v; refresh(2); }, true);
 toggle('togSq',     v=>{ cfg.squircle = v; root.classList.toggle('no-sq', !v); refresh(3); }, true);
 toggle('togMotion', v=>{ cfg.motion = v; }, true);
 toggle('togRT',     v=>{ root.classList.toggle('reduce-tr', v); }, false);
+toggle('togWall',   v=>{ cfg.wallMotion = v; root.classList.toggle('still', !v); }, false);
+root.classList.toggle('still', !cfg.wallMotion);
 
 if(!SQUIRCLE_OK){
   document.getElementById('togSq').style.opacity = .35;
@@ -1154,7 +1216,7 @@ function shuffleWall(){
 
 (function buildWall(){
   const colors = palettes[0];
-  for(let i=0; i<8; i++){
+  for(let i=0; i<6; i++){
     const b = document.createElement('div');
     b.className = 'blob';
     const size = 90 + (i*41 % 150);
