@@ -446,6 +446,7 @@ const cfg = {
   wallMotion: false,
 };
 
+
 const clamp = (v,a,b)=> v<a ? a : v>b ? b : v;
 const byte = v => v<0 ? 0 : v>255 ? 255 : v|0;
 
@@ -471,13 +472,19 @@ function sdf(px, py, hw, hh, r, n){
 const MAX_PIXELS = 1.4e6;
 const mapCache = new Map();
 
-function bake(w, h, radius, bevel, n, lightDeg){
+/* integer powers by squaring: Math.pow with a large exponent is the
+   single most expensive call in the lighting pass */
+function pow46(x){ const a=x*x, b=a*a, c=b*b, d=c*c, e=d*d; return e*c*b*a; }
+function pow26(x){ const a=x*x, b=a*a, c=b*b, d=c*c; return d*c*a; }
+
+function bake(w, h, radius, bevel, n, lightDeg, quality){
+  const q = quality || 1;
   const key = [w, h, radius.toFixed(1), bevel.toFixed(1), n, lightDeg,
-               window.devicePixelRatio || 1].join(':');
+               window.devicePixelRatio || 1, q].join(':');
   const hit = mapCache.get(key);
   if(hit) return hit;
 
-  let dpr = Math.min(2, window.devicePixelRatio || 1);
+  let dpr = Math.min(2, window.devicePixelRatio || 1) * q;
   if(w*h*dpr*dpr > MAX_PIXELS) dpr = Math.sqrt(MAX_PIXELS/(w*h));
 
   const cw = Math.max(4, Math.round(w*dpr));
@@ -492,47 +499,83 @@ function bake(w, h, radius, bevel, n, lightDeg){
   const H = new Float32Array(cw*ch);
   const T = new Float32Array(cw*ch);
   const A = new Float32Array(cw*ch);
+
+  /* per row span of pixels that sit deeper than the bevel. everything
+     strictly inside it is flat, and the whole lighting pass can skip it */
+  const deepLo = new Int32Array(ch);
+  const deepHi = new Int32Array(ch);
+
   for(let y=0; y<ch; y++){
+    let lo = -1, hi = -2;
     for(let x=0; x<cw; x++){
       const d = sdf(x + 0.5 - hw, y + 0.5 - hh, hw, hh, r, n);
       const t = clamp(-d/bv, 0, 1);
-      const u = 1 - t;
       const i = y*cw + x;
-      H[i] = Math.sqrt(Math.max(0, 1 - u*u));
       T[i] = t;
+      H[i] = t >= 1 ? 1 : (t <= 0 ? 0 : Math.sqrt(2*t - t*t));
       A[i] = clamp(-d/dpr + 0.5, 0, 1);
+      if(t >= 1){ if(lo < 0) lo = x; hi = x; }
     }
+    deepLo[y] = lo; deepHi[y] = hi;
   }
 
   const rad = lightDeg * Math.PI/180;
   const lx = Math.cos(rad), ly = -Math.sin(rad), lz = 0.60;
-  const ll = Math.hypot(lx, ly, lz);
+  const ll = Math.sqrt(lx*lx + ly*ly + lz*lz);
   const Lx = lx/ll, Ly = ly/ll, Lz = lz/ll;
-  const hh3 = Math.hypot(Lx, Ly, Lz + 1);
+  const hh3 = Math.sqrt(Lx*Lx + Ly*Ly + (Lz+1)*(Lz+1));
   const Hx = Lx/hh3, Hy = Ly/hh3, Hz = (Lz + 1)/hh3;
 
   /* bounce light from the opposite side: real glass lights up on both
      rims, the far one dimmer and broader */
   const Fx = -Lx, Fy = -Ly, Fz = Lz;
-  const fh = Math.hypot(Fx, Fy, Fz + 1);
+  const fh = Math.sqrt(Fx*Fx + Fy*Fy + (Fz+1)*(Fz+1));
   const Gx = Fx/fh, Gy = Fy/fh, Gz = (Fz + 1)/fh;
 
   const disp  = new ImageData(cw, ch);
   const spec  = new ImageData(cw, ch);
   const shade = new ImageData(cw, ch);
-  const rim   = new ImageData(cw, ch);
-  const dp = disp.data, sp = spec.data, sh = shade.data, rm = rim.data;
+  const dp = disp.data, sp = spec.data, sh = shade.data;
 
   const SLOPE = 0.34;   // how hard the encoded offset saturates
   const NSTR  = 1.35;   // normal strength for the lighting pass
   const EDGE  = clamp(2.2*dpr/bv, 0.03, 0.45);   // width of the bright hairline
 
+  /* the flat interior has one answer, so work it out once */
+  const flatLine = Math.exp(-(1/EDGE)*Math.sqrt(1/EDGE)*2.4);
+  const flatSpec = byte(clamp(
+      pow46(Math.max(Hz, 0))*1.55
+    + pow26(Math.max(Gz, 0))*0.40
+    + flatLine*(0.24 + 0.66*clamp(Lz, 0, 1) + 0.28*clamp(Fz, 0, 1)), 0, 1)*255);
+  const flatShade = byte(clamp(flatLine*Math.max(-Lz, 0)*0.55, 0, 1)*255);
+
   for(let y=0; y<ch; y++){
+    const yUp = y > 0 ? y-1 : 0;
+    const yDn = y < ch-1 ? y+1 : ch-1;
+
+    /* a pixel is flat only if its four neighbours are deep too */
+    let flatLo = -1, flatHi = -2;
+    if(deepLo[y] >= 0 && deepLo[yUp] >= 0 && deepLo[yDn] >= 0){
+      flatLo = Math.max(deepLo[y], deepLo[yUp], deepLo[yDn]) + 1;
+      flatHi = Math.min(deepHi[y], deepHi[yUp], deepHi[yDn]) - 1;
+    }
+
     for(let x=0; x<cw; x++){
+      if(x >= flatLo && x <= flatHi){
+        for(; x <= flatHi; x++){
+          const i = (y*cw + x)*4;
+          dp[i] = 128; dp[i+1] = 128; dp[i+2] = 0; dp[i+3] = 255;
+          sp[i] = sp[i+1] = sp[i+2] = 255; sp[i+3] = flatSpec;
+          sh[i] = sh[i+1] = sh[i+2] = 0;   sh[i+3] = flatShade;
+        }
+        x--;
+        continue;
+      }
+
       const xl = H[y*cw + (x > 0 ? x-1 : 0)];
       const xr = H[y*cw + (x < cw-1 ? x+1 : cw-1)];
-      const yt = H[(y > 0 ? y-1 : 0)*cw + x];
-      const yb = H[(y < ch-1 ? y+1 : ch-1)*cw + x];
+      const yt = H[yUp*cw + x];
+      const yb = H[yDn*cw + x];
 
       /* multiply by bv so the encoded slope is dimensionless:
          changing the edge width no longer changes the strength */
@@ -543,26 +586,26 @@ function bake(w, h, radius, bevel, n, lightDeg){
 
       dp[i]   = byte(128 + 127*Math.tanh(gx*SLOPE));
       dp[i+1] = byte(128 + 127*Math.tanh(gy*SLOPE));
-      dp[i+2] = 128;
       dp[i+3] = 255;
 
       const nx = -gx*NSTR, ny = -gy*NSTR;
-      const nl = Math.hypot(nx, ny, 1);
+      const nl = Math.sqrt(nx*nx + ny*ny + 1);
       const Nx = nx/nl, Ny = ny/nl, Nz = 1/nl;
 
       const ndh = Nx*Hx + Ny*Hy + Nz*Hz;
       const ndl = Nx*Lx + Ny*Ly + Nz*Lz;
-      const fres = Math.pow(1 - Nz, 2.6);
-      const k = y*cw + x;
-      const inside = A[k];
-      const line = Math.exp(-Math.pow(T[k]/EDGE, 1.5)*2.4);
-
       const ndg = Nx*Gx + Ny*Gy + Nz*Gz;
       const ndf = Nx*Fx + Ny*Fy + Nz*Fz;
 
+      const fres = Math.pow(1 - Nz, 2.6);
+      const k = y*cw + x;
+      const inside = A[k];
+      const u = T[k]/EDGE;
+      const line = Math.exp(-u*Math.sqrt(u)*2.4);
+
       const hi = clamp(
-        Math.pow(Math.max(ndh, 0), 46)*1.55
-        + Math.pow(Math.max(ndg, 0), 26)*0.40
+        pow46(Math.max(ndh, 0))*1.55
+        + pow26(Math.max(ndg, 0))*0.40
         + line*(0.24 + 0.66*clamp(ndl, 0, 1) + 0.28*clamp(ndf, 0, 1))
         + fres*0.09, 0, 1) * inside;
 
@@ -576,8 +619,7 @@ function bake(w, h, radius, bevel, n, lightDeg){
       sh[i] = sh[i+1] = sh[i+2] = 0;
       sh[i+3] = byte(lo*255);
 
-      rm[i] = rm[i+1] = rm[i+2] = 255;
-      rm[i+3] = byte(clamp(fres*1.7, 0, 1)*inside*255);
+      dp[i+2] = byte(clamp(fres*1.7, 0, 1)*inside*255);
     }
   }
 
@@ -585,13 +627,13 @@ function bake(w, h, radius, bevel, n, lightDeg){
     disp:  toURL(disp,  cw, ch),
     spec:  toURL(spec,  cw, ch),
     shade: toURL(shade, cw, ch),
-    rim:   toURL(rim,   cw, ch),
   };
 
   if(mapCache.size > 90) mapCache.clear();
   mapCache.set(key, out);
   return out;
 }
+
 
 function toURL(img, w, h){
   const cv = document.createElement('canvas');
@@ -648,7 +690,8 @@ function filterMarkup(id, maps, w, h){
 
   if(cfg.rim > 0){
     body += `
-      <feImage href="${maps.rim}" x="0" y="0" width="${w}" height="${h}" preserveAspectRatio="none" result="ring"/>
+      <feColorMatrix in="map" type="matrix" result="ring"
+        values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 1 0 0"/>
       <feColorMatrix in="${last}" type="saturate" values="${(1 + cfg.rim*2.4).toFixed(2)}" result="vivid"/>
       <feComposite in="vivid" in2="ring" operator="in" result="glow"/>
       <feComposite in="glow" in2="${last}" operator="arithmetic" k1="0" k2="${(cfg.rim*0.7).toFixed(2)}" k3="1" k4="0" result="lit"/>`;
@@ -768,7 +811,7 @@ class Glass{
       fn.setAttribute('intercept', lift);
     });
 
-    const vivid = f.querySelector('feColorMatrix[type="saturate"]');
+    const vivid = f.querySelector('feColorMatrix[type="saturate"][result="vivid"]');
     if(vivid) vivid.setAttribute('values', (1 + cfg.rim*2.4).toFixed(2));
     const mixIn = f.querySelector('feComposite[result="lit"]');
     if(mixIn) mixIn.setAttribute('k2', (cfg.rim*0.7).toFixed(2));
@@ -796,13 +839,24 @@ class Glass{
 
   bindPointer(){
     const el = this.el;
+    let queued = 0, mx = 0, my = 0;
     el.addEventListener('pointermove', e=>{
       if(!el.matches(':hover')) return;
-      const box = el.getBoundingClientRect();
-      el.style.setProperty('--gx', ((e.clientX - box.left)/box.width*100).toFixed(1) + '%');
-      el.style.setProperty('--gy', ((e.clientY - box.top)/box.height*100).toFixed(1) + '%');
+      mx = e.clientX; my = e.clientY;
+      /* a high polling rate mouse fires far more often than the screen
+         refreshes, and every glare update repaints the whole panel */
+      if(queued) return;
+      queued = requestAnimationFrame(()=>{
+        queued = 0;
+        const box = el.getBoundingClientRect();
+        el.style.setProperty('--gx', ((mx - box.left)/box.width*100).toFixed(1) + '%');
+        el.style.setProperty('--gy', ((my - box.top)/box.height*100).toFixed(1) + '%');
+      });
     });
-    el.addEventListener('pointerleave', ()=> this.relight());
+    el.addEventListener('pointerleave', ()=>{
+      if(queued){ cancelAnimationFrame(queued); queued = 0; }
+      this.relight();
+    });
   }
 
   squash(tx, ty){
@@ -833,6 +887,8 @@ class Glass{
   }
 
   destroy(){
+    if(this.dead) return;
+    this.dead = true;
     this.node.remove();
     springs.delete(this);
     const i = sheets.indexOf(this);
@@ -870,16 +926,39 @@ function applyCss(){
   root.style.setProperty('--glare', cfg.glare);
 }
 
-let pending = 0, pendingLevel = 0;
+const BAKE_GAP_MS = 90;
+let pending = 0, pendingLevel = 0, lastBake = 0, trailing = 0;
+
+function run(lv){
+  applyCss();
+  if(lv >= 3){
+    clearTimeout(trailing); trailing = 0;
+    lastBake = performance.now();
+    sheets.forEach(g=> g.sync(true));
+  } else if(lv === 2){
+    sheets.forEach(g=> g.optics());
+  }
+}
+
 function refresh(level){          // 1 = css, 2 = optics, 3 = geometry
   pendingLevel = Math.max(pendingLevel, level);
   if(pending) return;
   pending = requestAnimationFrame(()=>{
     const lv = pendingLevel;
     pending = 0; pendingLevel = 0;
-    applyCss();
-    if(lv >= 3) sheets.forEach(g=> g.sync(true));
-    else if(lv === 2) sheets.forEach(g=> g.optics());
+
+    /* re-baking every frame of a slider drag pins the main thread, so let
+       the geometry lag a little and always finish on the released value */
+    if(lv >= 3){
+      const wait = BAKE_GAP_MS - (performance.now() - lastBake);
+      if(wait > 0){
+        applyCss();
+        clearTimeout(trailing);
+        trailing = setTimeout(()=> run(3), wait);
+        return;
+      }
+    }
+    run(lv);
   });
 }
 
@@ -1000,10 +1079,24 @@ function closeMenu(){
   const m = live; live = null;
   document.removeEventListener('pointerdown', m.outside, true);
   document.removeEventListener('keydown', m.key);
-  m.el.animate(
+
+  /* a backgrounded tab never finishes the animation and a cancelled one
+     never fires onfinish, so the filter node would sit in defs forever */
+  let done = false;
+  const drop = ()=>{
+    if(done) return;
+    done = true;
+    m.glass.destroy();
+    m.el.remove();
+  };
+
+  const out = m.el.animate(
     [{ opacity:1, transform:'scale(1)' }, { opacity:0, transform:'scale(.92)' }],
     { duration:150, easing:'ease-in', fill:'forwards' }
-  ).onfinish = ()=>{ m.glass.destroy(); m.el.remove(); };
+  );
+  out.onfinish = drop;
+  out.oncancel = drop;
+  setTimeout(drop, 400);
 }
 
 function spawnMenu(model, anchor){

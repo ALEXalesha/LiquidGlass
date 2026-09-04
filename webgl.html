@@ -184,6 +184,7 @@
     <div class="row"><label>Rim vividness <b id="vRim">0.45</b></label><input id="rim" type="range" min="0" max="1.5" step="0.02" value="0.45"></div>
     <div class="row"><label>Spectral samples <b id="vTaps">14</b></label><input id="taps" type="range" min="1" max="32" value="14"></div>
 
+    <div class="stat"><span>Wallpaper motion</span><input id="wall" type="checkbox" checked style="accent-color:#34c759"></div>
     <div class="stat"><span>Frame</span><b id="fps">--</b></div>
     <div class="foot">Everything you see through the panels is refracted per pixel by <code>refract()</code>. Drag the panels. <a href="index.html">CSS + SVG version</a></div>
   </div>
@@ -583,11 +584,21 @@ function readLayout(dpr){
 
 let W = 0, H = 0, DPR = 1;
 
+/* with a still wallpaper and nobody touching anything there is nothing new
+   to draw, so idle frames cost nothing */
+let wallMotion = true;
+let dirty = true;
+const touch = ()=> dirty = true;
+document.addEventListener('pointerdown', touch, true);
+document.addEventListener('pointermove', touch, true);
+document.addEventListener('input', touch, true);
+window.addEventListener('resize', touch);
+
 function resize(){
   DPR = Math.min(2, window.devicePixelRatio || 1);
   const w = Math.round(innerWidth*DPR), h = Math.round(innerHeight*DPR);
   if(w === W && h === H) return;
-  W = w; H = h;
+  W = w; H = h; dirty = true;
   canvas.width = W; canvas.height = H;
   sizeTarget(targets[0], W, H);
   sizeTarget(targets[1], W, H);
@@ -600,6 +611,14 @@ const t0 = performance.now();
 
 function frame(){
   resize();
+
+  if(!wallMotion && !dirty){
+    meter();
+    requestAnimationFrame(frame);
+    return;
+  }
+  dirty = false;
+
   readLayout(DPR);
 
   gl.viewport(0, 0, W, H);
@@ -724,6 +743,11 @@ radInput.addEventListener('input', ()=>{
   }
 });
 radInput.dispatchEvent(new Event('input'));
+
+document.getElementById('wall').addEventListener('change', e=>{
+  wallMotion = e.target.checked;
+  dirty = true;
+});
 
 document.querySelectorAll('.seg button').forEach(b=>{
   b.addEventListener('click', ()=>{
