@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Liquid Glass — WebGL2</title>
+<style>
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body{ height:100%; margin:0; overflow:hidden; }
+  body{
+    font-family: -apple-system, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+    color:#fff; background:#06060c; user-select:none; touch-action:none;
+  }
+  #gl{ position:fixed; inset:0; width:100%; height:100%; display:block; z-index:0; }
+  #ui{ position:fixed; inset:0; z-index:1; }
+
+  /* the panels themselves are drawn by the shader.
+     these divs only carry text and controls, and tell the shader where to draw */
+  .gp{ position:absolute; background:transparent; }
+  .gp, .gp *{ text-shadow:0 1px 3px rgba(0,0,0,.35); }
+  .drag{ cursor:grab; }
+  .drag:active{ cursor:grabbing; }
+
+  .bar{
+    position:fixed; top:0; left:0; right:0; height:44px; z-index:2;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 26px; font-weight:600; font-size:15px; pointer-events:none;
+    text-shadow:0 1px 3px rgba(0,0,0,.5);
+  }
+  .bar .ic{ display:flex; gap:8px; align-items:center; }
+
+  .clock{ left:58px; top:92px; width:330px; padding:26px 30px; }
+  .clock .d{ font-size:15px; font-weight:600; opacity:.88; }
+  .clock .t{ font-size:76px; font-weight:700; letter-spacing:-3px; line-height:1; margin-top:6px;
+    font-variant-numeric:tabular-nums; }
+  .clock .m{ margin-top:12px; font-size:14px; opacity:.82; display:flex; gap:16px; }
+
+  .card{ left:58px; top:330px; width:342px; padding:20px 22px; }
+  .card .r{ display:flex; align-items:center; gap:14px; }
+  .card .art{ width:54px; height:54px; border-radius:15px; flex:0 0 auto;
+    background:linear-gradient(140deg,#ff6b6b,#ffd93d 45%,#6bcbff); box-shadow:0 6px 16px rgba(0,0,0,.4); }
+  .card .n1{ font-weight:700; font-size:17px; }
+  .card .n2{ font-size:13px; opacity:.75; margin-top:2px; }
+  .card .pb{ height:5px; border-radius:3px; margin-top:16px; background:rgba(255,255,255,.22); overflow:hidden; }
+  .card .pb i{ display:block; height:100%; width:42%; background:#fff; border-radius:3px; }
+  .card .ct{ display:flex; justify-content:center; gap:34px; margin-top:16px; }
+  .card .ct button{ background:none; border:0; padding:4px; cursor:pointer; color:#fff; }
+
+  .pill{ left:58px; top:540px; padding:15px 30px; font-weight:600; font-size:15px; }
+  .seg{ left:230px; top:540px; display:flex; padding:5px; gap:4px; }
+  .seg button{ border:0; background:transparent; color:#fff; font:inherit; font-weight:600;
+    padding:10px 20px; border-radius:999px; cursor:pointer; opacity:.78; }
+  .seg button.on{ background:rgba(255,255,255,.22); opacity:1; }
+
+  .dock{ left:50%; bottom:28px; transform:translateX(-50%); display:flex; gap:16px; padding:16px 20px; }
+  .app{ width:60px; height:60px; border-radius:19px; display:grid; place-items:center;
+    font-size:29px; cursor:pointer; transition:transform .2s cubic-bezier(.3,1.5,.5,1);
+    box-shadow:0 8px 18px rgba(0,0,0,.4), inset 0 1px 1px rgba(255,255,255,.4); }
+  @supports (corner-shape: squircle){ .app{ corner-shape:squircle; border-radius:22px; } }
+  .app:hover{ transform:translateY(-14px) scale(1.15); }
+  .a1{ background:linear-gradient(160deg,#3fdd6a,#1f9e46); }
+  .a2{ background:linear-gradient(160deg,#4fb2ff,#0257c8); }
+  .a3{ background:linear-gradient(160deg,#ff4f72,#c81e44); }
+  .a4{ background:linear-gradient(160deg,#ffe25a,#ff9f0a); }
+  .a5{ background:linear-gradient(160deg,#cf7bf5,#7d33b8); }
+  .a6{ background:linear-gradient(160deg,#8e98a8,#5b6472); }
+
+  .panel{ right:24px; top:58px; width:284px; padding:18px 20px 18px;
+    max-height:calc(100vh - 110px); overflow-y:auto; overflow-x:hidden;
+    scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.28) transparent; }
+  .panel h3{ margin:0 0 3px; font-size:16px; }
+  .panel .sub{ font-size:12px; opacity:.62; margin-bottom:6px; }
+  .panel .grp{ font-size:10.5px; font-weight:700; letter-spacing:.7px; text-transform:uppercase;
+    opacity:.42; margin:16px 0 4px; }
+  .panel .row{ margin:11px 0; }
+  .panel label{ display:flex; justify-content:space-between; font-size:12.5px; font-weight:600; margin-bottom:6px; }
+  .panel label b{ font-weight:600; opacity:.6; font-variant-numeric:tabular-nums; }
+  .panel input[type=range]{ width:100%; -webkit-appearance:none; appearance:none; height:5px;
+    border-radius:3px; background:rgba(255,255,255,.24); outline:none; }
+  .panel input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:17px; height:17px;
+    border-radius:50%; background:#fff; box-shadow:0 2px 6px rgba(0,0,0,.45); cursor:pointer; }
+  .panel .foot{ font-size:11px; opacity:.5; line-height:1.5; margin-top:14px; }
+  .panel .foot a{ color:#fff; }
+  .panel .stat{ display:flex; justify-content:space-between; font-size:12px; font-weight:600;
+    opacity:.62; margin-top:10px; font-variant-numeric:tabular-nums; }
+
+  @media (max-height: 720px){
+    .clock{ top:58px; width:288px; padding:18px 22px; }
+    .clock .t{ font-size:52px; letter-spacing:-2px; }
+    .card{ top:252px; width:308px; }
+    .bar{ font-size:14px; }
+    .pill{ top:auto; bottom:132px; }
+    .seg{ top:auto; bottom:132px; left:214px; }
+    .panel{ top:52px; width:258px; max-height:calc(100vh - 88px); }
+  }
+  @media (max-height: 560px){
+    .card{ display:none; }
+    .clock{ width:256px; }
+    .clock .t{ font-size:44px; }
+  }
+  @media (max-width: 940px){
+    .card{ display:none; }
+    .panel{ width:246px; right:16px; }
+    .dock{ gap:10px; padding:12px 14px; }
+    .app{ width:48px; height:48px; font-size:24px; }
+  }
+
+  #dead{ position:fixed; inset:0; z-index:9; display:none; place-items:center; text-align:center;
+    background:#0b0b14; padding:40px; font-size:15px; line-height:1.6; }
+  #dead b{ display:block; font-size:20px; margin-bottom:10px; }
+</style>
+</head>
+<body>
+
+<canvas id="gl"></canvas>
+
+<div id="ui">
+  <div class="bar">
+    <span id="clk">9:41</span>
+    <span class="ic">
+      <svg width="18" height="12" viewBox="0 0 18 12" fill="currentColor"><rect y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" width="3" height="12" rx="1"/></svg>
+      <svg width="16" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M1 4.2a10 10 0 0 1 14 0"/><path d="M3.6 7a6.3 6.3 0 0 1 8.8 0"/><circle cx="8" cy="10.2" r="1.1" fill="currentColor" stroke="none"/></svg>
+      <svg width="26" height="12" viewBox="0 0 26 12" fill="none"><rect x=".7" y=".7" width="21" height="10.6" rx="3.2" stroke="currentColor" stroke-opacity=".55" stroke-width="1.1"/><rect x="2.4" y="2.4" width="17.6" height="7.2" rx="2" fill="currentColor"/><path d="M23.4 4.2v3.6a2 2 0 0 0 0-3.6z" fill="currentColor" fill-opacity=".55"/></svg>
+    </span>
+  </div>
+
+  <div class="gp drag clock" data-glass data-r="30">
+    <div class="d" id="day">Friday, May 30</div>
+    <div class="t" id="big">9:41</div>
+    <div class="m"><span>San Francisco</span><span>20° Sunny</span></div>
+  </div>
+
+  <div class="gp drag card" data-glass data-r="28">
+    <div class="r">
+      <div class="art"></div>
+      <div><div class="n1">Liquid Dreams</div><div class="n2">Glass Orchestra — Refraction EP</div></div>
+    </div>
+    <div class="pb"><i></i></div>
+    <div class="ct">
+      <button><svg width="22" height="18" viewBox="0 0 22 18" fill="currentColor"><path d="M2 1h2.6v16H2zM21 1.6v14.8L8.5 9z"/></svg></button>
+      <button><svg width="18" height="20" viewBox="0 0 18 20" fill="currentColor"><rect x="1" y="1" width="5.4" height="18" rx="1.6"/><rect x="11.6" y="1" width="5.4" height="18" rx="1.6"/></svg></button>
+      <button><svg width="22" height="18" viewBox="0 0 22 18" fill="currentColor"><path d="M17.4 1H20v16h-2.6zM1 1.6v14.8L13.5 9z"/></svg></button>
+    </div>
+  </div>
+
+  <div class="gp drag pill" data-glass data-r="999">Continue</div>
+
+  <div class="gp drag seg" data-glass data-r="999">
+    <button class="on">Day</button><button>Week</button><button>Month</button>
+  </div>
+
+  <div class="gp dock" data-glass data-r="36">
+    <div class="app a1">💬</div><div class="app a2">🧭</div><div class="app a3">🎵</div>
+    <div class="app a4">📝</div><div class="app a5">📷</div><div class="app a6">⚙️</div>
+  </div>
+
+  <div class="gp panel" data-glass data-r="26" id="panel">
+    <h3>Liquid Glass</h3>
+    <div class="sub">WebGL2 — real refraction</div>
+
+    <div class="grp">Glass</div>
+    <div class="row"><label>IOR <b id="vIor">1.52</b></label><input id="ior" type="range" min="1" max="2.4" step="0.01" value="1.52"></div>
+    <div class="row"><label>Thickness <b id="vThick">42</b></label><input id="thick" type="range" min="0" max="140" value="42"></div>
+    <div class="row"><label>Edge width <b id="vBevel">14</b></label><input id="bevel" type="range" min="3" max="70" value="14"></div>
+    <div class="row"><label>Dispersion <b id="vDisp">0.100</b></label><input id="disp" type="range" min="0" max="0.4" step="0.005" value="0.10"></div>
+    <div class="row"><label>Blur <b id="vBlur">1.6</b></label><input id="blur" type="range" min="0" max="24" step="0.2" value="1.6"></div>
+    <div class="row"><label>Corner radius <b id="vRad">30</b></label><input id="rad" type="range" min="6" max="60" value="30"></div>
+
+    <div class="grp">Surface</div>
+    <div class="row"><label>Light angle <b id="vAng">130</b></label><input id="ang" type="range" min="0" max="359" value="130"></div>
+    <div class="row"><label>Roughness <b id="vRough">0.20</b></label><input id="rough" type="range" min="0.02" max="0.6" step="0.01" value="0.20"></div>
+    <div class="row"><label>Specular <b id="vSpec">1.00</b></label><input id="spec" type="range" min="0" max="3" step="0.05" value="1.00"></div>
+    <div class="row"><label>Reflection <b id="vRefl">0.80</b></label><input id="refl" type="range" min="0" max="1.5" step="0.02" value="0.80"></div>
+    <div class="row"><label>Self-shadow <b id="vShade">0.40</b></label><input id="shade" type="range" min="0" max="1" step="0.02" value="0.40"></div>
+
+    <div class="grp">Material</div>
+    <div class="row"><label>Tint <b id="vTint">0.04</b></label><input id="tint" type="range" min="0" max="0.4" step="0.01" value="0.04"></div>
+    <div class="row"><label>Saturation <b id="vSat">1.30</b></label><input id="sat" type="range" min="0.4" max="2.5" step="0.02" value="1.30"></div>
+    <div class="row"><label>Legibility dim <b id="vLeg">0.20</b></label><input id="leg" type="range" min="0" max="1" step="0.02" value="0.20"></div>
+    <div class="row"><label>Rim vividness <b id="vRim">0.45</b></label><input id="rim" type="range" min="0" max="1.5" step="0.02" value="0.45"></div>
+    <div class="row"><label>Spectral samples <b id="vTaps">14</b></label><input id="taps" type="range" min="1" max="32" value="14"></div>
+
+    <div class="stat"><span>Frame</span><b id="fps">--</b></div>
+    <div class="foot">Everything you see through the panels is refracted per pixel by <code>refract()</code>. Drag the panels. <a href="index.html">CSS + SVG version</a></div>
+  </div>
+</div>
+
+<div id="dead"><div><b>WebGL2 not available</b>This page needs WebGL2. Check chrome://gpu, or open the CSS version instead.</div></div>
+
+<script>
+"use strict";
+
+const canvas = document.getElementById('gl');
+const gl = canvas.getContext('webgl2', { antialias:false, alpha:false, premultipliedAlpha:false });
+if(!gl){
+  document.getElementById('dead').style.display = 'grid';
+  throw new Error('no webgl2');
+}
+
+const cfg = {
+  ior: 1.52, thickness: 42, bevel: 14, dispersion: 0.10, blur: 1.6, radius: 30,
+  angle: 130, rough: 0.20, spec: 1.00, refl: 0.80, shade: 0.40,
+  tint: 0.04, sat: 1.30, leg: 0.20, rim: 0.45, taps: 14,
+};
+
+const SQUIRCLE = CSS.supports('corner-shape', 'squircle') ? 4.0 : 2.0;
+
+/* ------------------------------------------------------------------
+   shaders
+   ------------------------------------------------------------------ */
+
+const VS = `#version 300 es
+in vec2 aPos;
+uniform vec2 uRes;
+uniform vec4 uQuad;
+void main(){
+  vec2 px = uQuad.xy + aPos*uQuad.zw;
+  vec2 ndc = (px/uRes)*2.0 - 1.0;
+  gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
+}`;
+
+/* wallpaper: a pre-drawn 2d canvas for the crisp bits (grid, type, emoji)
+   plus animated blobs added here so the background keeps moving */
+const FS_WALL = `#version 300 es
+precision highp float;
+out vec4 frag;
+uniform vec2 uRes;
+uniform sampler2D uTex;
+uniform float uTime;
+
+vec3 blob(vec2 p, vec2 c, float r, vec3 col){
+  float d = length(p - c)/r;
+  return col * smoothstep(1.0, 0.0, d) * 0.85;
+}
+
+void main(){
+  vec2 uv = gl_FragCoord.xy/uRes;
+  vec3 c = texture(uTex, uv).rgb;
+
+  vec2 p = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  float t = uTime;
+  vec3 add = vec3(0.0);
+  add += blob(p, uRes*vec2(0.18,0.30) + vec2(sin(t*0.21)*90.0, cos(t*0.17)*70.0), 210.0, vec3(1.00,0.42,0.24));
+  add += blob(p, uRes*vec2(0.74,0.22) + vec2(cos(t*0.15)*110.0, sin(t*0.23)*60.0), 240.0, vec3(1.00,0.78,0.26));
+  add += blob(p, uRes*vec2(0.62,0.78) + vec2(sin(t*0.13)*130.0, cos(t*0.19)*90.0), 270.0, vec3(0.22,0.42,1.00));
+  add += blob(p, uRes*vec2(0.28,0.82) + vec2(cos(t*0.25)*80.0,  sin(t*0.14)*100.0), 200.0, vec3(0.82,0.30,1.00));
+  add += blob(p, uRes*vec2(0.46,0.50) + vec2(sin(t*0.11)*160.0, cos(t*0.27)*70.0), 180.0, vec3(0.20,0.86,0.62));
+
+  frag = vec4(1.0 - (1.0 - c)*(1.0 - add*0.30), 1.0);
+}`;
+
+const FS_GLASS = `#version 300 es
+precision highp float;
+out vec4 frag;
+
+uniform vec2  uRes;
+uniform sampler2D uSrc;
+uniform vec4  uRect;        // x, y, w, h  in device px, top-left origin
+uniform float uRadius;
+uniform float uPower;       // corner exponent: 2 = circle, 4 = squircle
+uniform float uBevel;
+uniform float uIOR;
+uniform float uThick;
+uniform float uDisp;
+uniform float uBlur;
+uniform vec3  uLight;
+uniform float uRough;
+uniform float uSpec;
+uniform float uRefl;
+uniform float uShade;
+uniform float uTint;
+uniform float uSat;
+uniform float uLeg;
+uniform float uRim;
+uniform int   uTaps;
+
+const float PI = 3.14159265;
+
+float pnorm(vec2 v, float n){
+  if(v.x <= 0.0) return max(v.y, 0.0);
+  if(v.y <= 0.0) return v.x;
+  if(n < 2.5) return length(v);
+  return pow(pow(v.x, n) + pow(v.y, n), 1.0/n);
+}
+
+float sdRect(vec2 p, vec2 hs, float r, float n){
+  vec2 q = abs(p) - (hs - r);
+  return pnorm(max(q, 0.0), n) + min(max(q.x, q.y), 0.0) - r;
+}
+
+vec2 sdGrad(vec2 p, vec2 hs, float r, float n){
+  const float e = 0.7;
+  vec2 g = vec2(
+    sdRect(p + vec2(e,0.0), hs, r, n) - sdRect(p - vec2(e,0.0), hs, r, n),
+    sdRect(p + vec2(0.0,e), hs, r, n) - sdRect(p - vec2(0.0,e), hs, r, n));
+  return normalize(g + vec2(1e-6));
+}
+
+vec2 toUV(vec2 px){ return vec2(px.x, uRes.y - px.y)/uRes; }
+
+/* rough approximation of the visible spectrum, used to weight the
+   per-wavelength samples back into rgb */
+vec3 spectrum(float s){
+  return clamp(vec3(1.6 - abs(4.2*s - 3.1),
+                    1.6 - abs(4.2*s - 2.1),
+                    1.6 - abs(4.2*s - 1.1)), 0.0, 1.0);
+}
+
+vec3 envColor(vec3 d){
+  float up = clamp(-d.y*0.5 + 0.5, 0.0, 1.0);
+  vec3 c = mix(vec3(0.03,0.035,0.06), vec3(0.62,0.68,0.85), pow(up, 1.3));
+  c += vec3(1.0,0.97,0.92) * pow(max(dot(d, uLight), 0.0), 12.0) * 3.0;
+  c += vec3(0.35,0.5,0.95) * pow(max(dot(d, vec3(-uLight.xy, uLight.z)), 0.0), 6.0) * 0.50;
+  return c;
+}
+
+float glint(vec3 N, vec3 L, vec3 V, float rough){
+  vec3 H = normalize(L + V);
+  float NoH = max(dot(N, H), 0.0);
+  return pow(NoH, 2.0/max(rough*rough, 2e-3));
+}
+
+vec3 saturate3(vec3 c, float s){
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  return mix(vec3(l), c, s);
+}
+
+void main(){
+  vec2 px = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  vec2 hs = uRect.zw*0.5;
+  vec2 q  = px - (uRect.xy + hs);
+
+  float r = min(uRadius, min(hs.x, hs.y));
+  float n = (r >= min(hs.x, hs.y) - 0.6) ? 2.0 : uPower;   // a capsule stays circular
+  float d = sdRect(q, hs, r, n);
+
+  vec3 back = texture(uSrc, gl_FragCoord.xy/uRes).rgb;
+
+  /* contact shadow, offset down and away from the light */
+  vec2 sOff = vec2(-uLight.x, uLight.y)*10.0 + vec2(0.0, 10.0);
+  float ds = sdRect(q - sOff, hs, r, n);
+  float shadow = 0.45*exp(-max(ds, 0.0)/16.0) + 0.22*exp(-max(ds, 0.0)/44.0);
+
+  float cover = 1.0 - smoothstep(-1.0, 0.6, d);
+  if(cover <= 0.001){
+    frag = vec4(back*(1.0 - shadow*0.9), 1.0);
+    return;
+  }
+
+  /* height field of the bevel: a circular arc, so the slope goes
+     near vertical right at the outline */
+  float t  = clamp(-d/uBevel, 0.0, 1.0);
+  float sq = sqrt(max(2.0*t - t*t, 1e-3));
+  /* the arc rises by the full bevel width, so the width cancels out of
+     the slope. dividing by uBevel here was flattening the whole rim */
+  float dhdd = -clamp((1.0 - t)/sq, 0.0, 14.0);
+  vec2  g = sdGrad(q, hs, r, n);
+  vec3  N = normalize(vec3(-dhdd*g, 1.0));
+  vec3  V = vec3(0.0, 0.0, 1.0);
+
+  /* refraction, one sample per wavelength band */
+  vec3 acc = vec3(0.0), wsum = vec3(1e-4);
+  int taps = uTaps;
+  for(int i = 0; i < 32; i++){
+    if(i >= taps) break;
+    float s = (float(i) + 0.5)/float(taps);
+    float ior = uIOR + (s - 0.5)*uDisp*uIOR;
+    vec3 R = refract(-V, N, 1.0/max(ior, 1.0));
+    vec2 off = vec2(0.0);
+    if(R.z < -0.02) off = R.xy*(uThick/(-R.z));
+    off = clamp(off, vec2(-400.0), vec2(400.0));
+
+    float ang = float(i)*2.39996;
+    vec2 j = vec2(cos(ang), sin(ang))*uBlur*sqrt(s + 0.05);
+
+    vec3 c = texture(uSrc, toUV(px + off + j)).rgb;
+    vec3 w = taps > 2 ? spectrum(s) : vec3(1.0);
+    acc += c*w; wsum += w;
+  }
+  vec3 refr = acc/wsum;
+
+  refr = saturate3(refr, uSat);
+  refr = refr*(1.0 - uLeg*0.42) + uLeg*0.07;
+  refr = mix(refr, vec3(1.0), uTint);
+
+  float fres = 0.04 + 0.96*pow(1.0 - clamp(N.z, 0.0, 1.0), 5.0);
+  vec3  Rr   = reflect(-V, N);
+  vec3  col  = mix(refr, envColor(Rr), clamp(fres*uRefl, 0.0, 1.0));
+
+  /* rim reads more vivid on real glass: the edge concentrates colour */
+  float rimMask = pow(1.0 - clamp(N.z, 0.0, 1.0), 2.2);
+  col = mix(col, saturate3(col, 1.0 + uRim*2.2), rimMask*clamp(uRim, 0.0, 1.0));
+
+  vec3 L2 = vec3(-uLight.x, -uLight.y, uLight.z);
+  float sp = glint(N, uLight, V, uRough) + glint(N, L2, V, uRough*2.2)*0.35;
+
+  /* the outermost sliver is thinner than a pixel and always catches
+     grazing light, so it gets its own hairline term */
+  float ew   = clamp(2.4/uBevel, 0.02, 0.5);
+  float line = exp(-pow(t/ew, 1.5)*2.4);
+  sp += line*(0.20 + 0.80*clamp(dot(N, uLight), 0.0, 1.0)
+                   + 0.35*clamp(dot(N, L2), 0.0, 1.0));
+
+  col += vec3(1.0)*sp*uSpec;
+
+  float lam = dot(N, uLight);
+  col *= 1.0 - uShade*clamp(-lam, 0.0, 1.0)*rimMask;
+
+  vec3 outc = back*(1.0 - shadow*0.9);
+  frag = vec4(mix(outc, col, cover), 1.0);
+}`;
+
+const FS_COPY = `#version 300 es
+precision highp float;
+out vec4 frag;
+uniform sampler2D uSrc;
+uniform vec2 uRes;
+void main(){ frag = vec4(texture(uSrc, gl_FragCoord.xy/uRes).rgb, 1.0); }`;
+
+/* ------------------------------------------------------------------
+   gl plumbing
+   ------------------------------------------------------------------ */
+
+function compile(type, src){
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if(!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
+    throw new Error(gl.getShaderInfoLog(sh) + '\n' + src.split('\n').map((l,i)=> (i+1)+': '+l).join('\n'));
+  }
+  return sh;
+}
+
+function program(fs){
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, VS));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.bindAttribLocation(p, 0, 'aPos');
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {};
+  const count = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for(let i = 0; i < count; i++){
+    const name = gl.getActiveUniform(p, i).name.replace('[0]', '');
+    u[name] = gl.getUniformLocation(p, name);
+  }
+  return { p, u };
+}
+
+const progWall  = program(FS_WALL);
+const progGlass = program(FS_GLASS);
+const progCopy  = program(FS_COPY);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const vbo = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0, 1,0, 0,1, 1,1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+function makeTarget(){
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fb = gl.createFramebuffer();
+  return { tex, fb, w:0, h:0 };
+}
+
+const targets = [makeTarget(), makeTarget()];
+
+function sizeTarget(t, w, h){
+  if(t.w === w && t.h === h) return;
+  t.w = w; t.h = h;
+  gl.bindTexture(gl.TEXTURE_2D, t.tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, t.fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t.tex, 0);
+}
+
+/* ------------------------------------------------------------------
+   wallpaper texture: crisp things the shader cannot draw
+   ------------------------------------------------------------------ */
+
+const wallTex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, wallTex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+function paintWall(w, h){
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  const c = cv.getContext('2d');
+
+  const bg = c.createLinearGradient(0, 0, w*0.6, h);
+  bg.addColorStop(0, '#170c38');
+  bg.addColorStop(1, '#05050a');
+  c.fillStyle = bg; c.fillRect(0, 0, w, h);
+
+  c.globalCompositeOperation = 'screen';
+  [[0.12,0.10,'#ff5a2d'], [0.88,0.14,'#ffc93c'], [0.84,0.90,'#2f5bff'], [0.10,0.88,'#c93cff']]
+    .forEach(([x,y,col])=>{
+      const g = c.createRadialGradient(w*x, h*y, 0, w*x, h*y, Math.max(w,h)*0.55);
+      g.addColorStop(0, col); g.addColorStop(1, 'transparent');
+      c.globalAlpha = 0.62;
+      c.fillStyle = g; c.fillRect(0, 0, w, h);
+      c.globalAlpha = 1;
+    });
+  c.globalCompositeOperation = 'source-over';
+
+  const step = 46*(w/innerWidth);
+  c.strokeStyle = 'rgba(255,255,255,.11)';
+  c.lineWidth = Math.max(1, w/innerWidth);
+  c.beginPath();
+  for(let x = 0; x < w; x += step){ c.moveTo(x, 0); c.lineTo(x, h); }
+  for(let y = 0; y < h; y += step){ c.moveTo(0, y); c.lineTo(w, y); }
+  c.stroke();
+
+  const k = w/innerWidth;
+  c.fillStyle = 'rgba(255,255,255,.20)';
+  c.font = `700 ${13*k}px "Segoe UI", system-ui, sans-serif`;
+  ['REFRACTION','DISPERSION','FRESNEL','SPECULAR','CAUSTICS','TOTAL INTERNAL REFLECTION']
+    .forEach((word, i)=>{
+      c.save();
+      c.translate(-40*k, h*(0.09 + i*0.155));
+      c.fillText((word + '   ').repeat(9), 0, 0);
+      c.restore();
+    });
+
+  c.font = `${54*k}px "Segoe UI Emoji", sans-serif`;
+  ['🪩','🛟','🧊','🔮','💎','🫧','🩵','🛼','🌊','⚡'].forEach((ch, i)=>{
+    c.fillText(ch, w*(0.06 + ((i*13)%88)/100), h*(0.18 + ((i*27)%66)/100));
+  });
+
+  gl.bindTexture(gl.TEXTURE_2D, wallTex);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+}
+
+/* ------------------------------------------------------------------
+   panels: the DOM owns the layout, the shader follows it
+   ------------------------------------------------------------------ */
+
+const panels = [...document.querySelectorAll('[data-glass]')].map(el=>({
+  el, radius: parseFloat(el.dataset.r) || 24, rect: [0,0,0,0],
+}));
+
+function readLayout(dpr){
+  for(const p of panels){
+    const b = p.el.getBoundingClientRect();
+    p.rect = [b.left*dpr, b.top*dpr, b.width*dpr, b.height*dpr];
+  }
+}
+
+/* ------------------------------------------------------------------
+   frame
+   ------------------------------------------------------------------ */
+
+let W = 0, H = 0, DPR = 1;
+
+function resize(){
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  const w = Math.round(innerWidth*DPR), h = Math.round(innerHeight*DPR);
+  if(w === W && h === H) return;
+  W = w; H = h;
+  canvas.width = W; canvas.height = H;
+  sizeTarget(targets[0], W, H);
+  sizeTarget(targets[1], W, H);
+  paintWall(W, H);
+}
+
+function drawQuad(){ gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); }
+
+const t0 = performance.now();
+
+function frame(){
+  resize();
+  readLayout(DPR);
+
+  gl.viewport(0, 0, W, H);
+  gl.disable(gl.BLEND);
+  gl.bindVertexArray(vao);
+
+  let src = targets[0], dst = targets[1];
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, src.fb);
+  gl.useProgram(progWall.p);
+  gl.uniform2f(progWall.u.uRes, W, H);
+  gl.uniform4f(progWall.u.uQuad, 0, 0, W, H);
+  gl.uniform1f(progWall.u.uTime, (performance.now() - t0)/1000);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, wallTex);
+  gl.uniform1i(progWall.u.uTex, 0);
+  drawQuad();
+
+  const a = cfg.angle*Math.PI/180;
+  const lx = Math.cos(a), ly = -Math.sin(a), lz = 0.40;
+  const ll = Math.hypot(lx, ly, lz);
+
+  gl.useProgram(progGlass.p);
+  gl.uniform2f(progGlass.u.uRes, W, H);
+  gl.uniform1f(progGlass.u.uPower, SQUIRCLE);
+  gl.uniform1f(progGlass.u.uBevel, Math.max(2, cfg.bevel*DPR));
+  gl.uniform1f(progGlass.u.uIOR, cfg.ior);
+  gl.uniform1f(progGlass.u.uThick, cfg.thickness*DPR);
+  gl.uniform1f(progGlass.u.uDisp, cfg.dispersion);
+  gl.uniform1f(progGlass.u.uBlur, cfg.blur*DPR);
+  gl.uniform3f(progGlass.u.uLight, lx/ll, ly/ll, lz/ll);
+  gl.uniform1f(progGlass.u.uRough, cfg.rough);
+  gl.uniform1f(progGlass.u.uSpec, cfg.spec);
+  gl.uniform1f(progGlass.u.uRefl, cfg.refl);
+  gl.uniform1f(progGlass.u.uShade, cfg.shade);
+  gl.uniform1f(progGlass.u.uTint, cfg.tint);
+  gl.uniform1f(progGlass.u.uSat, cfg.sat);
+  gl.uniform1f(progGlass.u.uLeg, cfg.leg);
+  gl.uniform1f(progGlass.u.uRim, cfg.rim);
+  gl.uniform1i(progGlass.u.uTaps, cfg.taps|0);
+
+  const pad = Math.ceil((cfg.thickness*1.6 + cfg.blur*2 + 70)*DPR);
+
+  for(const p of panels){
+    const [x, y, w, h] = p.rect;
+    if(w < 2 || h < 2) continue;
+
+    /* the source must not be the render target, so ping-pong */
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, src.fb);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, dst.fb);
+    gl.blitFramebuffer(0, 0, W, H, 0, 0, W, H, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fb);
+    gl.useProgram(progGlass.p);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, src.tex);
+    gl.uniform1i(progGlass.u.uSrc, 0);
+    gl.uniform4f(progGlass.u.uRect, x, y, w, h);
+    gl.uniform1f(progGlass.u.uRadius, Math.min(p.radius, Math.min(w, h)/2/DPR)*DPR);
+    gl.uniform4f(progGlass.u.uQuad, x - pad, y - pad, w + pad*2, h + pad*2);
+    drawQuad();
+
+    const tmp = src; src = dst; dst = tmp;
+  }
+
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.useProgram(progCopy.p);
+  gl.uniform2f(progCopy.u.uRes, W, H);
+  gl.uniform4f(progCopy.u.uQuad, 0, 0, W, H);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, src.tex);
+  gl.uniform1i(progCopy.u.uSrc, 0);
+  drawQuad();
+
+  meter();
+  requestAnimationFrame(frame);
+}
+
+let frames = 0, mark = performance.now();
+const fpsOut = document.getElementById('fps');
+function meter(){
+  frames++;
+  const now = performance.now();
+  if(now - mark >= 600){
+    fpsOut.textContent = Math.round(frames*1000/(now - mark)) + ' fps';
+    frames = 0; mark = now;
+  }
+}
+
+requestAnimationFrame(frame);
+
+/* ------------------------------------------------------------------
+   ui
+   ------------------------------------------------------------------ */
+
+function slider(id, key, fmt){
+  const inp = document.getElementById(id);
+  const out = document.getElementById('v' + id[0].toUpperCase() + id.slice(1));
+  const show = ()=> out.textContent = fmt(cfg[key]);
+  inp.addEventListener('input', ()=>{ cfg[key] = parseFloat(inp.value); show(); });
+  show();
+}
+const i0 = v => Math.round(v);
+const d2 = v => v.toFixed(2);
+
+slider('ior','ior',d2);          slider('thick','thickness',i0);
+slider('bevel','bevel',i0);      slider('disp','dispersion',v=>v.toFixed(3));
+slider('blur','blur',v=>v.toFixed(1)); slider('rad','radius',i0);
+slider('ang','angle',i0);        slider('rough','rough',d2);
+slider('spec','spec',d2);        slider('refl','refl',d2);
+slider('shade','shade',d2);      slider('tint','tint',d2);
+slider('sat','sat',d2);          slider('leg','leg',d2);
+slider('rim','rim',d2);          slider('taps','taps',i0);
+
+/* corner radius drives both the shader and the html hit box */
+const radInput = document.getElementById('rad');
+radInput.addEventListener('input', ()=>{
+  for(const p of panels){
+    const base = parseFloat(p.el.dataset.r);
+    if(base < 900) p.radius = cfg.radius*(base/30);
+  }
+});
+radInput.dispatchEvent(new Event('input'));
+
+document.querySelectorAll('.seg button').forEach(b=>{
+  b.addEventListener('click', ()=>{
+    b.parentElement.querySelectorAll('button').forEach(x=> x.classList.remove('on'));
+    b.classList.add('on');
+  });
+});
+
+let drag = null;
+document.querySelectorAll('.drag').forEach(el=>{
+  el.addEventListener('pointerdown', e=>{
+    if(e.target.closest('input, button')) return;
+    const b = el.getBoundingClientRect();
+    el.style.left = b.left + 'px';
+    el.style.top = b.top + 'px';
+    el.style.right = 'auto'; el.style.bottom = 'auto'; el.style.transform = 'none';
+    drag = { el, dx: e.clientX - b.left, dy: e.clientY - b.top };
+    el.setPointerCapture(e.pointerId);
+  });
+  el.addEventListener('pointermove', e=>{
+    if(!drag || drag.el !== el) return;
+    el.style.left = (e.clientX - drag.dx) + 'px';
+    el.style.top  = (e.clientY - drag.dy) + 'px';
+  });
+  const stop = ()=>{ if(drag && drag.el === el) drag = null; };
+  el.addEventListener('pointerup', stop);
+  el.addEventListener('pointercancel', stop);
+});
+
+const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function tick(){
+  const now = new Date();
+  const t = now.getHours() + ':' + String(now.getMinutes()).padStart(2, '0');
+  document.getElementById('big').textContent = t;
+  document.getElementById('clk').textContent = t;
+  document.getElementById('day').textContent =
+    DAYS[now.getDay()] + ', ' + MONTHS[now.getMonth()] + ' ' + now.getDate();
+}
+tick();
+setInterval(tick, 10000);
+</script>
+</body>
+</html>
