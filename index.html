@@ -251,6 +251,14 @@
     .dock{ gap:10px; padding:12px 14px; }
     .app{ width:48px; height:48px; font-size:24px; }
   }
+  @media (max-height: 660px){
+    .clock{ top:54px; width:252px; padding:16px 20px; }
+    .clock .time{ font-size:46px; letter-spacing:-1.5px; }
+    .clock .meta{ margin-top:8px; font-size:13px; }
+    .card{ display:none; }
+    .toolbar{ bottom:104px; }
+    .panel{ top:52px; max-height:calc(100vh - 92px); }
+  }
   @media (max-width: 680px){
     .panel{ width:210px; }
     .card{ display:none; }
