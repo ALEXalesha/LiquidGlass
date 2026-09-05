@@ -245,6 +245,9 @@
   .miniswitch.on{ background:rgba(52,199,89,.7); }
   .miniswitch.on .k{ transform:translateX(19px); }
 
+  #goo{ position:fixed; inset:0; z-index:19; pointer-events:none; opacity:0; }
+  #goo circle{ fill:rgba(255,255,255,.26); }
+
   .tag{ position:fixed; left:24px; bottom:24px; z-index:7; font-size:12px; opacity:.45; }
 
   /* ---------- RESPONSIVE ---------- */
@@ -302,6 +305,22 @@
 <body>
 
 <svg id="lg-svg" width="0" height="0" style="position:absolute" aria-hidden="true"><defs id="lg-defs"></defs></svg>
+
+<!-- the blob that pulls the menu out of its icon. blur then a steep alpha
+     ramp makes two overlapping shapes read as one liquid body -->
+<svg id="goo" aria-hidden="true">
+  <defs>
+    <filter id="goo-f" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="11" result="soft"/>
+      <feColorMatrix in="soft" type="matrix" result="tight"
+        values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 24 -11"/>
+    </filter>
+  </defs>
+  <g filter="url(#goo-f)">
+    <circle id="goo-a" cx="0" cy="0" r="0"/>
+    <circle id="goo-b" cx="0" cy="0" r="0"/>
+  </g>
+</svg>
 
 <div id="wall"><div id="grid"></div></div>
 
@@ -732,6 +751,18 @@ const ONLY_R = '1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0';
 const ONLY_G = '0 0 0 0 0  0 1 0 0 0  0 0 0 0 0  0 0 0 1 0';
 const ONLY_B = '0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0';
 
+/* A flat slope dims everything by the same amount, which is not what iOS
+   does. This curve lifts the dark end and crushes the bright end, so white
+   type keeps its contrast over a pale backdrop while a dark one stays dark.
+   Being a per pixel table, it adapts inside a single panel. */
+const CALM_FROM = [0.00, 0.20, 0.40, 0.60, 0.80, 1.00];
+const CALM_TO   = [0.10, 0.26, 0.42, 0.56, 0.68, 0.78];
+
+function legibilityTable(){
+  const a = cfg.legibility;
+  return CALM_FROM.map((v, i)=> (v + (CALM_TO[i] - v)*a).toFixed(4)).join(' ');
+}
+
 /* only pad by what the displacement can actually reach - a percentage
    region makes every big panel filter twice the pixels it needs */
 function filterPad(){
@@ -762,9 +793,7 @@ function filterMarkup(id, maps, w, h){
   }
 
   if(cfg.legibility > 0){
-    /* flatten the backdrop toward mid grey so white type keeps its contrast
-       over bright wallpaper, the way iOS dims whatever sits under glass */
-    const f = `type="linear" slope="${(1 - cfg.legibility*0.42).toFixed(3)}" intercept="${(cfg.legibility*0.07).toFixed(3)}"`;
+    const f = `type="table" tableValues="${legibilityTable()}"`;
     body += `
       <feComponentTransfer in="${last}" result="calm">
         <feFuncR ${f}/><feFuncG ${f}/><feFuncB ${f}/>
@@ -900,11 +929,9 @@ class Glass{
       maps[0].setAttribute('scale', s);
     }
 
-    const slope = (1 - cfg.legibility*0.42).toFixed(3);
-    const lift  = (cfg.legibility*0.07).toFixed(3);
+    const table = legibilityTable();
     f.querySelectorAll('feComponentTransfer > *').forEach(fn=>{
-      fn.setAttribute('slope', slope);
-      fn.setAttribute('intercept', lift);
+      fn.setAttribute('tableValues', table);
     });
 
     const vivid = f.querySelector('feColorMatrix[type="saturate"][result="vivid"]');
@@ -924,8 +951,8 @@ class Glass{
   relight(){
     const box = this.el.getBoundingClientRect();
     const rad = cfg.light * Math.PI/180;
-    const sx = innerWidth*0.5 + Math.cos(rad)*innerWidth*0.9;
-    const sy = innerHeight*0.5 - Math.sin(rad)*innerHeight*1.1;
+    const sx = innerWidth*0.5 + Math.cos(rad)*innerWidth*0.9 + tilt.x*innerWidth*0.5;
+    const sy = innerHeight*0.5 - Math.sin(rad)*innerHeight*1.1 + tilt.y*innerHeight*0.5;
     const dx = sx - (box.left + box.width/2);
     const dy = sy - (box.top + box.height/2);
     const len = Math.hypot(dx, dy) || 1;
@@ -990,6 +1017,23 @@ class Glass{
     const i = sheets.indexOf(this);
     if(i >= 0) sheets.splice(i, 1);
   }
+}
+
+/* On a phone the highlight tracks the tilt. It only moves the glare, never
+   cfg.light, because the light angle is baked into the textures and changing
+   it would re-bake everything on every device reading. */
+const tilt = { x: 0, y: 0 };
+
+if(!CALM && typeof DeviceOrientationEvent !== 'undefined'){
+  let queued = false;
+  addEventListener('deviceorientation', e=>{
+    if(e.gamma == null && e.beta == null) return;
+    tilt.x = clamp((e.gamma || 0)/45, -1, 1);
+    tilt.y = clamp(((e.beta || 0) - 45)/45, -1, 1);
+    if(queued) return;
+    queued = true;
+    requestAnimationFrame(()=>{ queued = false; sheets.forEach(g=> g.relight()); });
+  });
 }
 
 /* ---------- spring loop ---------- */
@@ -1205,6 +1249,8 @@ function closeMenu(){
 
   /* a backgrounded tab never finishes the animation and a cancelled one
      never fires onfinish, so the filter node would sit in defs forever */
+  gooHide();
+
   let done = false;
   const drop = ()=>{
     if(done) return;
@@ -1258,6 +1304,8 @@ function spawnMenu(model, anchor){
   const glass = new Glass(el);
   sheets.push(glass);
 
+  gooPull(anchor, left + mw/2, top + mh/2, Math.min(mw, mh));
+
   /* FLIP morph: the sheet grows out of whatever was clicked */
   const fromW = anchor.w || 20, fromH = anchor.h || 20;
   const cx = anchor.cx !== undefined ? anchor.cx : anchor.x;
@@ -1297,6 +1345,55 @@ function spawnMenu(model, anchor){
   document.addEventListener('keydown', key);
 
   live = { el, glass, outside, key };
+}
+
+/* Apple's menus do not scale up, they flow out of the control with surface
+   tension. Two circles under the goo filter merge into one body and pinch
+   apart as they separate, which reads as liquid where a scale does not. */
+const gooLayer = document.getElementById('goo');
+const gooA = document.getElementById('goo-a');
+const gooB = document.getElementById('goo-b');
+let gooRun = 0, gooStop = 0;
+
+function gooHide(){
+  cancelAnimationFrame(gooRun);
+  clearTimeout(gooStop);
+  gooLayer.style.opacity = '0';
+  gooA.setAttribute('r', 0);
+  gooB.setAttribute('r', 0);
+}
+
+function gooPull(anchor, toX, toY, span){
+  if(CALM || !cfg.motion) return;
+
+  const fromX = anchor.cx !== undefined ? anchor.cx : anchor.x;
+  const fromY = anchor.cy !== undefined ? anchor.cy : anchor.y;
+  const seed  = Math.max(12, Math.min(anchor.w || 22, anchor.h || 22) * 0.42);
+  const grown = Math.max(seed, span * 0.42);
+
+  gooA.setAttribute('cx', fromX);
+  gooA.setAttribute('cy', fromY);
+  gooLayer.style.opacity = '1';
+
+  const started = performance.now();
+  const DUR = 420;
+  cancelAnimationFrame(gooRun);
+  clearTimeout(gooStop);
+  /* a backgrounded tab parks rAF, and the blob would sit there for good */
+  gooStop = setTimeout(gooHide, DUR + 160);
+
+  (function step(now){
+    const t = Math.min(1, (now - started)/DUR);
+    /* ease out, then let the tail fade so the neck snaps rather than stretches */
+    const e = 1 - Math.pow(1 - t, 2.6);
+    gooA.setAttribute('r', seed * (1 - e*0.55));
+    gooB.setAttribute('cx', fromX + (toX - fromX)*e);
+    gooB.setAttribute('cy', fromY + (toY - fromY)*e);
+    gooB.setAttribute('r', seed + (grown - seed)*e);
+    gooLayer.style.opacity = String(0.6 * Math.max(0, 1 - Math.pow(t, 1.7)));
+    if(t < 1) gooRun = requestAnimationFrame(step);
+    else gooHide();
+  })(started);
 }
 
 function toast(msg){

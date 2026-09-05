@@ -219,6 +219,53 @@ async function cssSuite(){
     return v === 'pan-y' || { why: 'touch-action=' + v + ', body none would block panning' };
   });
 
+  await check('legibility dims by a curve, not a flat slope', ()=>{
+    const fn = doc.getElementById('lgf0').querySelector('feComponentTransfer > *');
+    if(!fn) return { why: 'no transfer in the chain' };
+    const type = fn.getAttribute('type');
+    const tv = (fn.getAttribute('tableValues') || '').split(' ').map(Number);
+    if(type !== 'table') return { why: 'type=' + type + ', that dims everything equally' };
+    const liftsDark = tv[0] > 0;
+    const crushesBright = tv[tv.length-1] < 1;
+    return (liftsDark && crushesBright)
+      || { why: 'curve does not adapt: ' + tv.join(' ') };
+  });
+
+  await check('the dim curve follows its slider', ()=>{
+    const read = ()=> doc.getElementById('lgf0')
+      .querySelector('feComponentTransfer > *').getAttribute('tableValues');
+    ev("(()=>{const s=document.getElementById('leg');s.value=0.9;s.dispatchEvent(new Event('input'));run(2);})()");
+    const strong = read();
+    ev("(()=>{const s=document.getElementById('leg');s.value=0.3;s.dispatchEvent(new Event('input'));run(2);})()");
+    const mild = read();
+    return strong !== mild || { why: 'unchanged at ' + mild };
+  });
+
+  await check('the menu blob shows and then clears itself', ()=>{
+    const r = ev(`(()=>{
+      gooPull({cx:200, cy:700, w:60, h:60}, 400, 400, 240);
+      const up = getComputedStyle(gooLayer).opacity;
+      return {up: parseFloat(up), radius: parseFloat(gooB.getAttribute('r'))};
+    })()`);
+    if(!(r.up > 0 && r.radius > 0)) return { why: JSON.stringify(r) };
+    return new Promise(res=>{
+      setTimeout(()=>{
+        const down = parseFloat(win.getComputedStyle(doc.getElementById('goo')).opacity);
+        res(down === 0 || { why: 'still at opacity ' + down + ' after the animation window' });
+      }, 700);
+    });
+  });
+
+  await check('tilt moves the highlight without re-baking', ()=>{
+    const r = ev(`(()=>{
+      const sig = sheets[0].geoSig;
+      dispatchEvent(new DeviceOrientationEvent('deviceorientation', {gamma: 40, beta: 70}));
+      return {x: tilt.x, y: tilt.y, rebaked: sheets[0].geoSig !== sig};
+    })()`);
+    return (Math.abs(r.x) > 0.5 && !r.rebaked)
+      || { why: JSON.stringify(r) };
+  });
+
   await check('pressing a toolbar item does not shove its neighbours', ()=>{
     const items = [...doc.querySelectorAll('.toolbar > *')].filter(e=> !e.classList.contains('lg-spacer'));
     const at = ()=> items.map(e=> Math.round(e.getBoundingClientRect().left));

@@ -426,7 +426,14 @@ void main(){
   vec3 refr = acc/wsum;
 
   refr = saturate3(refr, uSat);
-  refr = refr*(1.0 - uLeg*0.42) + uLeg*0.07;
+
+  /* adaptive dim: rescale luminance along the same curve the css build uses,
+     leaving hue alone. bright backdrops get pulled down hard, dark ones get
+     lifted, so white type reads either way */
+  float lum = dot(refr, vec3(0.2126, 0.7152, 0.0722));
+  float aim = mix(0.10, 0.78, clamp(lum, 0.0, 1.0));
+  refr *= mix(1.0, aim/max(lum, 1e-3), uLeg);
+
   refr = mix(refr, vec3(1.0), uTint);
 
   float fres = 0.04 + 0.96*pow(1.0 - clamp(N.z, 0.0, 1.0), 5.0);
@@ -809,6 +816,16 @@ document.querySelectorAll('.drag').forEach(el=>{
   el.addEventListener('pointerup', stop);
   el.addEventListener('pointercancel', stop);
 });
+
+/* the light angle is only a uniform here, so tilt can drive it outright */
+if(typeof DeviceOrientationEvent !== 'undefined'){
+  const base = cfg.angle;
+  addEventListener('deviceorientation', e=>{
+    if(e.gamma == null) return;
+    cfg.angle = base - Math.max(-45, Math.min(45, e.gamma)) * 1.4;
+    dirty = true;
+  });
+}
 
 const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
