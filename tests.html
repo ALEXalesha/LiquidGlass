@@ -294,6 +294,47 @@ async function cssSuite(){
     return (held && spacer) || { why: 'held=' + held + ' spacer=' + spacer };
   });
 
+
+  /* The chain is re-run every frame while a panel moves, and it is rasterised
+     on the cpu: 11 fps against 48 with the two decorative stages dropped.
+     Neither reads on something in motion, so they come off while it moves. */
+  const chainOf = id => ({
+    disp: doc.getElementById(id).querySelectorAll('feDisplacementMap').length,
+    rim:  !!doc.getElementById(id).querySelector('feComposite[result="lit"]'),
+  });
+  const dragClock = fn =>{
+    const clock = doc.querySelector('.clock');
+    const b = clock.getBoundingClientRect();
+    pointer(clock, 'pointerdown', b.left + 20, b.top + 20);
+    pointer(clock, 'pointermove', b.left + 70, b.top + 50);
+    const got = fn();
+    pointer(clock, 'pointerup', b.left + 70, b.top + 50);
+    return got;
+  };
+
+  await check('a panel being dragged drops the two costly stages', ()=>{
+    const rest = chainOf('lgf0');
+    const moving = dragClock(()=> chainOf('lgf0'));
+    const back = chainOf('lgf0');
+    return (rest.disp === 3 && rest.rim && moving.disp === 1 && !moving.rim
+            && back.disp === 3 && back.rim)
+      || { why: JSON.stringify({ rest, moving, back }) };
+  });
+
+  await check('the panels that are not moving keep their full chain', ()=>{
+    const other = dragClock(()=> chainOf('lgf6'));
+    return (other.disp === 3 && other.rim) || { why: JSON.stringify(other) };
+  });
+
+  await check('simplifying while moving can be switched off', ()=>{
+    ev("document.getElementById('togLod').click()");
+    const moving = dragClock(()=> chainOf('lgf0'));
+    ev("document.getElementById('togLod').click()");
+    const on = dragClock(()=> chainOf('lgf0'));
+    return (moving.disp === 3 && moving.rim && on.disp === 1)
+      || { why: 'off=' + JSON.stringify(moving) + ' on=' + JSON.stringify(on) };
+  });
+
   return { win, doc, ev };
 }
 

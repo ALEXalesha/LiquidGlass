@@ -415,6 +415,7 @@
 
     <div class="grp">Performance</div>
     <div class="togline"><span>Wallpaper motion</span><div class="miniswitch" id="togWall"><div class="k"></div></div></div>
+    <div class="togline"><span>Simplify while moving</span><div class="miniswitch on" id="togLod"><div class="k"></div></div></div>
     <div class="togline"><span>Frame rate</span><b id="fps" style="opacity:.6;font-variant-numeric:tabular-nums">--</b></div>
 
     <div class="hint">Drag any glass panel across the wallpaper. Watch the rim: it pulls in what is outside the element, splits it into colour and lights up where the surface faces the light.</div>
@@ -470,6 +471,7 @@ const cfg = {
   squircle: true,
   motion: true,
   wallMotion: false,
+  simplifyMoving: true,
 };
 
 const CALM = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -851,7 +853,7 @@ function filterPad(){
   return Math.ceil(cfg.refraction*0.6 + cfg.blur*3 + 8);
 }
 
-function filterMarkup(id, maps, w, h){
+function filterMarkup(id, maps, w, h, chroma, rim){
   /* negative scale = the rim pulls the surroundings inward,
      the way a thick convex edge really behaves */
   const s = -cfg.refraction;
@@ -859,7 +861,7 @@ function filterMarkup(id, maps, w, h){
   let body = `<feImage href="${maps.disp}" x="0" y="0" width="${w}" height="${h}" preserveAspectRatio="none" result="map"/>`;
   let last = 'ref';
 
-  if(cfg.chromatic && cfg.aberration > 0){
+  if(chroma){
     const ab = cfg.aberration;
     body += `
       <feDisplacementMap in="SourceGraphic" in2="map" scale="${s*(1+ab)}" ${sel} result="dR"/>
@@ -883,13 +885,13 @@ function filterMarkup(id, maps, w, h){
     last = 'calm';
   }
 
-  if(cfg.rim > 0){
+  if(rim > 0){
     body += `
       <feColorMatrix in="map" type="matrix" result="ring"
         values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 1 0 0"/>
-      <feColorMatrix in="${last}" type="saturate" values="${(1 + cfg.rim*2.4).toFixed(2)}" result="vivid"/>
+      <feColorMatrix in="${last}" type="saturate" values="${(1 + rim*2.4).toFixed(2)}" result="vivid"/>
       <feComposite in="vivid" in2="ring" operator="in" result="glow"/>
-      <feComposite in="glow" in2="${last}" operator="arithmetic" k1="0" k2="${(cfg.rim*0.7).toFixed(2)}" k3="1" k4="0" result="lit"/>`;
+      <feComposite in="glow" in2="${last}" operator="arithmetic" k1="0" k2="${(rim*0.7).toFixed(2)}" k3="1" k4="0" result="lit"/>`;
     last = 'lit';
   }
 
@@ -915,6 +917,7 @@ class Glass{
     defs.appendChild(this.node);
     this.geoSig = '';
     this.shapeSig = '';
+    this.moving = false;
     this.spring = { sx:1, sy:1, vx:0, vy:0, tx:1, ty:1 };
     this.bindPointer();
     this.sync(true);
@@ -970,20 +973,28 @@ class Glass{
     m = m || this.metrics();
     if(m.hidden || !this.maps) return;
 
+    /* While a panel actually moves, the backdrop under it changes every frame
+       and this whole chain is re-run every frame - on the cpu, because a chain
+       with feImage and feDisplacementMap does not go to the gpu. Measured on a
+       1536x721 window at dpr 1.25, dragging one panel: 11 fps as built, 24 with
+       the chromatic aberration off, 23 with the rim glow off, 48 with both off,
+       234 with no svg filter at all. So the two decorative stages come off
+       while it moves - three displacement passes become one, and the saturate
+       and its two composites go - and the refraction, the thing you drag the
+       panel to look at, stays. */
+    const cheap  = this.moving && cfg.simplifyMoving;
+    const chroma = cfg.chromatic && cfg.aberration > 0 && !cheap;
+    const rim    = cheap ? 0 : cfg.rim;
+
     /* the two feImage nodes carry data-url pngs. replacing the filter node
        makes chrome decode them again, so only do it when the chain actually
        changes shape or the maps were re-baked */
-    const shape = [
-      cfg.chromatic && cfg.aberration > 0,
-      cfg.legibility > 0,
-      cfg.rim > 0,
-      this.geoSig,
-    ].join('|');
+    const shape = [chroma, cfg.legibility > 0, rim > 0, this.geoSig].join('|');
 
     if(shape !== this.shapeSig){
       this.shapeSig = shape;
       const fresh = new DOMParser()
-        .parseFromString(`<svg xmlns="${NS}">${filterMarkup(this.id, this.maps, m.w, m.h)}</svg>`, 'image/svg+xml')
+        .parseFromString(`<svg xmlns="${NS}">${filterMarkup(this.id, this.maps, m.w, m.h, chroma, rim)}</svg>`, 'image/svg+xml')
         .querySelector('filter');
       this.node.replaceWith(fresh);
       this.node = fresh;
@@ -1062,6 +1073,14 @@ class Glass{
       if(queued){ cancelAnimationFrame(queued); queued = 0; }
       this.relight();
     });
+  }
+
+  /* called when a drag really starts and when it ends, not on a bare press */
+  setMoving(on){
+    on = !!on;
+    if(this.moving === on) return;
+    this.moving = on;
+    this.optics();
   }
 
   squash(tx, ty){
@@ -1214,6 +1233,7 @@ function lift(d){
   d.dx = d.startX - box.left;
   d.dy = d.startY - box.top;
   d.lifted = true;
+  d.glass && d.glass.setMoving(true);
 }
 
 document.querySelectorAll('.draggable').forEach(el=>{
@@ -1250,7 +1270,7 @@ document.querySelectorAll('.draggable').forEach(el=>{
   const release = ()=>{
     if(!drag || drag.el !== el) return;
     drag = null;
-    if(glass){ glass.squash(1, 1); glass.relight(); }
+    if(glass){ glass.setMoving(false); glass.squash(1, 1); glass.relight(); }
   };
   el.addEventListener('pointerup', release);
   el.addEventListener('pointercancel', release);
@@ -1300,6 +1320,7 @@ toggle('togSq',     v=>{ cfg.squircle = v; root.classList.toggle('no-sq', !v); r
 toggle('togMotion', v=>{ cfg.motion = v; }, !CALM);
 toggle('togRT',     v=>{ root.classList.toggle('reduce-tr', v); }, false);
 toggle('togWall',   v=>{ cfg.wallMotion = v; root.classList.toggle('still', !v); }, false);
+toggle('togLod',    v=>{ cfg.simplifyMoving = v; refresh(2); }, true);
 root.classList.toggle('still', !cfg.wallMotion);
 
 if(!SQUIRCLE_OK){
