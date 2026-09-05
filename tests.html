@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Liquid Glass — checks</title>
+<style>
+  body{ font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+        background:#0d0d13; color:#dfe3ea; margin:0; padding:26px 30px 60px; }
+  h1{ font-size:17px; margin:0 0 4px; }
+  .sub{ opacity:.55; margin-bottom:22px; font-size:12px; }
+  h2{ font-size:13px; margin:26px 0 8px; color:#8ab4ff; font-weight:700; }
+  .row{ display:flex; gap:10px; padding:2px 0; align-items:baseline; }
+  .tag{ flex:0 0 46px; font-weight:700; }
+  .ok   .tag{ color:#4ad07a; }
+  .fail .tag{ color:#ff5f6d; }
+  .skip .tag{ color:#c8a24a; }
+  .why{ opacity:.6; margin-left:auto; text-align:right; max-width:46%; }
+  .fail .why{ opacity:.95; color:#ffb3b8; }
+  #sum{ position:sticky; top:0; background:#0d0d13; padding:12px 0 14px;
+        border-bottom:1px solid #23232e; margin-bottom:6px; font-size:14px; }
+  #sum b{ font-size:20px; }
+  iframe{ position:absolute; left:-6000px; top:0; width:1440px; height:880px; border:0; }
+  .note{ opacity:.5; font-size:11.5px; margin-top:20px; max-width:70ch; line-height:1.7; }
+</style>
+</head>
+<body>
+
+<h1>Liquid Glass — checks</h1>
+<div class="sub">Runs both pages in hidden frames and pokes at them. Open this in the browser you actually use.</div>
+<div id="sum">running…</div>
+<div id="out"></div>
+
+<div class="note">
+  Frame rate cannot be measured when the tab is not being composited: the browser
+  parks requestAnimationFrame and every timing loop reads zero. Those checks report
+  <b>skip</b> rather than inventing a number. Keep this tab in front to get them.
+</div>
+
+<script>
+"use strict";
+
+/* Both pages keep their state in top level const/let, which never lands on
+   window. eval inside the frame's own realm sees them, so the pages need no
+   test hooks bolted on. */
+
+const out = document.getElementById('out');
+const sum = document.getElementById('sum');
+const results = { pass: 0, fail: 0, skip: 0, rows: [] };
+
+function line(state, name, why){
+  results[state === 'ok' ? 'pass' : state === 'fail' ? 'fail' : 'skip']++;
+  results.rows.push({ state, name, why: why || '' });
+  const el = document.createElement('div');
+  el.className = 'row ' + state;
+  el.innerHTML = '<span class="tag">' + (state === 'ok' ? 'PASS' : state === 'fail' ? 'FAIL' : 'SKIP')
+    + '</span><span></span><span class="why"></span>';
+  el.children[1].textContent = name;
+  el.children[2].textContent = why || '';
+  out.appendChild(el);
+}
+
+function group(title){
+  const h = document.createElement('h2');
+  h.textContent = title;
+  out.appendChild(h);
+}
+
+async function check(name, fn){
+  let got;
+  try{ got = await fn(); }
+  catch(err){ return line('fail', name, String(err && err.message || err)); }
+  if(got === 'skip') return line('skip', name, 'not measurable here');
+  if(got === true) return line('ok', name);
+  if(got && got.skip) return line('skip', name, got.why);
+  if(got && got.ok) return line('ok', name, got.why);
+  line('fail', name, got && got.why ? got.why : 'expected true, got ' + JSON.stringify(got));
+}
+
+const STAMP = Date.now();
+
+function frame(url){
+  return new Promise(resolve=>{
+    const f = document.createElement('iframe');
+    /* a harness that checks a cached build is worse than no harness */
+    f.src = url + '?t=' + STAMP;
+    f.addEventListener('load', ()=> resolve(f), { once: true });
+    document.body.appendChild(f);
+  });
+}
+
+const wait = ms => new Promise(r=> setTimeout(r, ms));
+
+/* does requestAnimationFrame actually tick here? */
+function rafAlive(win){
+  return new Promise(resolve=>{
+    let done = false;
+    win.requestAnimationFrame(()=>{ done = true; });
+    setTimeout(()=> resolve(done), 250);
+  });
+}
+
+function pointer(el, type, x, y){
+  el.dispatchEvent(new el.ownerDocument.defaultView.PointerEvent(
+    type, { bubbles: true, clientX: x, clientY: y, pointerId: 1 }));
+}
+
+/* ------------------------------------------------------------------ */
+
+async function cssSuite(){
+  group('index.html — CSS + SVG filters');
+  const f = await frame('index.html');
+  const win = f.contentWindow, doc = f.contentDocument;
+  const ev = src => win.eval(src);
+  await wait(300);
+
+  await check('engine boots with every glass element', ()=>
+    ev('sheets.length') === doc.querySelectorAll('[data-glass]').length || {
+      why: 'sheets=' + ev('sheets.length') });
+
+  await check('three baked textures per element, not four', ()=>{
+    const keys = ev('Object.keys(sheets[0].maps)');
+    return keys.length === 3 || { why: keys.join(',') };
+  });
+
+  await check('one feImage in the chain, rim comes from the blue channel', ()=>{
+    const n = doc.getElementById('lgf0').querySelectorAll('feImage').length;
+    const ring = doc.getElementById('lgf0').querySelector('feColorMatrix[result="ring"]');
+    return (n === 1 && !!ring) || { why: 'feImage=' + n + ' ring=' + !!ring };
+  });
+
+  await check('blur slider reaches the real backdrop-filter', ()=>{
+    ev("(()=>{const s=document.getElementById('blur');s.value=11;s.dispatchEvent(new Event('input'));sheets.forEach(g=>g.optics());})()");
+    const bf = doc.querySelector('.clock').style.backdropFilter;
+    ev("(()=>{const s=document.getElementById('blur');s.value=1.5;s.dispatchEvent(new Event('input'));sheets.forEach(g=>g.optics());})()");
+    return bf.includes('blur(11px)') || { why: bf };
+  });
+
+  await check('saturation slider reaches it too', ()=>{
+    ev("(()=>{const s=document.getElementById('sat');s.value=240;s.dispatchEvent(new Event('input'));sheets.forEach(g=>g.optics());})()");
+    const bf = doc.querySelector('.clock').style.backdropFilter;
+    ev("(()=>{const s=document.getElementById('sat');s.value=170;s.dispatchEvent(new Event('input'));sheets.forEach(g=>g.optics());})()");
+    return bf.includes('saturate(240%)') || { why: bf };
+  });
+
+  await check('tint slider writes its css variable', ()=>{
+    ev("(()=>{const s=document.getElementById('tint');s.value=0.29;s.dispatchEvent(new Event('input'));applyCss();})()");
+    const v = win.getComputedStyle(doc.documentElement).getPropertyValue('--tint').trim();
+    ev("(()=>{const s=document.getElementById('tint');s.value=0.08;s.dispatchEvent(new Event('input'));applyCss();})()");
+    return v === '0.29' || { why: v };
+  });
+
+  await check('a geometry slider re-bakes', ()=>{
+    const before = ev('sheets[0].geoSig');
+    ev("(()=>{const s=document.getElementById('bev');s.value=41;s.dispatchEvent(new Event('input'));run(3);})()");
+    const after = ev('sheets[0].geoSig');
+    ev("(()=>{const s=document.getElementById('bev');s.value=20;s.dispatchEvent(new Event('input'));run(3);})()");
+    return before !== after || { why: 'signature unchanged: ' + before };
+  });
+
+  await check('chromatic toggle switches three passes to one', ()=>{
+    const n0 = doc.getElementById('lgf0').querySelectorAll('feDisplacementMap').length;
+    ev("(()=>{document.getElementById('togChroma').click();run(2);})()");
+    const n1 = doc.getElementById('lgf0').querySelectorAll('feDisplacementMap').length;
+    ev("(()=>{document.getElementById('togChroma').click();run(2);})()");
+    return (n0 === 3 && n1 === 1) || { why: n0 + ' -> ' + n1 };
+  });
+
+  await check('reduce transparency toggle takes effect', ()=>{
+    ev("document.getElementById('togRT').click()");
+    const on = doc.documentElement.classList.contains('reduce-tr');
+    ev("document.getElementById('togRT').click()");
+    return on === true;
+  });
+
+  await check('wallpaper motion toggle takes effect', ()=>{
+    const before = doc.documentElement.classList.contains('still');
+    ev("document.getElementById('togWall').click()");
+    const after = doc.documentElement.classList.contains('still');
+    ev("document.getElementById('togWall').click()");
+    return before !== after || { why: 'class did not flip' };
+  });
+
+  await check('capsule label is wrapped, not a bare text node', ()=>
+    !!doc.querySelector('.pill span') || { why: 'text would paint under the blend layers' });
+
+  await check('hidden element does not bake', ()=>{
+    const r = ev(`(()=>{
+      const g = sheets.find(s=>s.el.classList.contains('card'));
+      if(!g.el.offsetWidth) return {skipped:true};
+      const sig = g.geoSig, n = mapCache.size;
+      g.el.style.display='none'; g.sync(true); g.optics();
+      const held = g.geoSig===sig && mapCache.size===n;
+      g.el.style.display=''; g.sync(true);
+      return {held, back: !!g.maps};
+    })()`);
+    if(r.skipped) return { skip: true, why: 'card hidden by a media query at this width' };
+    return (r.held && r.back) || { why: JSON.stringify(r) };
+  });
+
+  await check('menus free their filter nodes', ()=>{
+    const r = ev(`(()=>{
+      const n0 = document.getElementById('lg-defs').children.length;
+      const s0 = sheets.length;
+      const app = document.querySelector('.dock .app');
+      for(let i=0;i<4;i++){ app.click(); closeMenu(); }
+      return {n0, s0};
+    })()`);
+    return new Promise(res=>{
+      setTimeout(()=>{
+        const n1 = doc.getElementById('lg-defs').children.length;
+        const s1 = ev('sheets.length');
+        res((n1 === r.n0 && s1 === r.s0) || { why: 'defs ' + r.n0 + '->' + n1 + ', sheets ' + r.s0 + '->' + s1 });
+      }, 700);
+    });
+  });
+
+  await check('control panel can be scrolled by touch', ()=>{
+    const v = win.getComputedStyle(doc.querySelector('.panel')).touchAction;
+    return v === 'pan-y' || { why: 'touch-action=' + v + ', body none would block panning' };
+  });
+
+  await check('pressing a toolbar item does not shove its neighbours', ()=>{
+    const items = [...doc.querySelectorAll('.toolbar > *')].filter(e=> !e.classList.contains('lg-spacer'));
+    const at = ()=> items.map(e=> Math.round(e.getBoundingClientRect().left));
+    const before = at();
+    const pill = doc.querySelector('.pill');
+    const b = pill.getBoundingClientRect();
+    pointer(pill, 'pointerdown', b.left + 20, b.top + 20);
+    const held = JSON.stringify(at()) === JSON.stringify(before);
+    pointer(pill, 'pointerup', b.left + 20, b.top + 20);
+    const restored = JSON.stringify(at()) === JSON.stringify(before);
+    return (held && restored) || { why: before + ' -> ' + at() };
+  });
+
+  await check('a real drag leaves a spacer so the row holds', ()=>{
+    const items = [...doc.querySelectorAll('.toolbar > *')].filter(e=> !e.classList.contains('lg-spacer'));
+    const others = items.slice(1);
+    const at = ()=> others.map(e=> Math.round(e.getBoundingClientRect().left));
+    const before = at();
+    const pill = doc.querySelector('.pill');
+    const b = pill.getBoundingClientRect();
+    pointer(pill, 'pointerdown', b.left + 20, b.top + 20);
+    pointer(pill, 'pointermove', b.left + 70, b.top + 50);
+    const held = at().every((v, i)=> Math.abs(v - before[i]) < 2);
+    const spacer = !!doc.querySelector('.lg-spacer');
+    pointer(pill, 'pointerup', b.left + 70, b.top + 50);
+    return (held && spacer) || { why: 'held=' + held + ' spacer=' + spacer };
+  });
+
+  return { win, doc, ev };
+}
+
+async function cssPerf(ctx){
+  group('index.html — cost');
+  const { ev } = ctx;
+
+  await check('baking runs off the main thread', ()=>
+    ev('!!baker') || { why: 'the worker died, baking fell back to the main thread' });
+
+  /* what matters is how long the main thread is blocked, not how long the
+     bake takes in total */
+  const blocked = ev(`(()=>{
+    mapCache.clear();
+    const t = performance.now();
+    for(const g of sheets) g.sync(true);
+    return +(performance.now()-t).toFixed(1);
+  })()`);
+  await check('a full re-bake blocks the main thread under 20 ms', ()=>
+    blocked < 20 ? { ok: true, why: blocked + ' ms' } : { why: blocked + ' ms' });
+
+  const landed = await new Promise(res=>{
+    const t0 = performance.now();
+    (function poll(){
+      if(ctx.ev('waiting.size') === 0) return res(Math.round(performance.now() - t0));
+      if(performance.now() - t0 > 4000) return res(-1);
+      setTimeout(poll, 30);
+    })();
+  });
+  await check('every map comes back from the worker', ()=>
+    landed >= 0 ? { ok: true, why: landed + ' ms round trip' } : { why: 'timed out' });
+
+  await check('elements pick the new maps up', ()=>
+    ev('sheets.every(g=> g.metrics().hidden || !!g.maps)') || { why: 'an element has no maps' });
+
+  const optics = ev(`(()=>{
+    const t = performance.now();
+    for(const g of sheets) g.optics();
+    return +(performance.now()-t).toFixed(1);
+  })()`);
+  await check('rebuilding every filter stays under 5 ms', ()=>
+    optics < 5 ? { ok: true, why: optics + ' ms' } : { why: optics + ' ms' });
+
+  const alive = await rafAlive(ctx.win);
+  if(!alive){
+    await check('frame rate with a still wallpaper', ()=> 'skip');
+    await check('frame rate with the wallpaper moving', ()=> 'skip');
+    return;
+  }
+  const fps = src => ctx.win.eval(`(()=>{${src}
+    return new Promise(r=>{let n=0;const t0=performance.now();
+      (function f(){n++;const d=performance.now()-t0;
+        d<1400?requestAnimationFrame(f):r(Math.round(n/(d/1000)));})();});})()`);
+
+  const still = await fps("document.documentElement.classList.add('still');");
+  await check('frame rate with a still wallpaper', ()=>
+    still >= 50 ? { ok: true, why: still + ' fps' } : { why: still + ' fps' });
+
+  const moving = await fps("document.documentElement.classList.remove('still');");
+  await check('frame rate with the wallpaper moving', ()=>
+    moving >= 30 ? { ok: true, why: moving + ' fps' } : { why: moving + ' fps' });
+  ctx.win.eval("document.documentElement.classList.add('still');");
+}
+
+async function glSuite(){
+  group('webgl.html — WebGL2 shader');
+  const f = await frame('webgl.html');
+  const win = f.contentWindow, doc = f.contentDocument;
+  const ev = src => win.eval(src);
+  await wait(400);
+
+  await check('context is alive and the error panel is hidden', ()=>{
+    const lost = ev("document.getElementById('gl').getContext('webgl2').isContextLost()");
+    const dead = win.getComputedStyle(doc.getElementById('dead')).display;
+    return (!lost && dead === 'none') || { why: 'lost=' + lost + ' dead=' + dead };
+  });
+
+  await check('every shader program linked', ()=>
+    ev('!!(progWall && progGlass && progCopy)') || { why: 'a program is missing' });
+
+  await check('all six panels registered', ()=>{
+    const n = ev('panels.length');
+    return n === doc.querySelectorAll('[data-glass]').length || { why: 'panels=' + n };
+  });
+
+  await check('optics sliders write the config', ()=>{
+    const r = ev(`(()=>{
+      const set=(id,v)=>{const s=document.getElementById(id);s.value=v;s.dispatchEvent(new Event('input'));};
+      set('ior',1.9); set('thick',70); set('taps',7);
+      const got={ior:cfg.ior,thick:cfg.thickness,taps:cfg.taps};
+      set('ior',1.52); set('thick',42); set('taps',14);
+      return got;
+    })()`);
+    return (Math.abs(r.ior - 1.9) < 1e-6 && r.thick === 70 && r.taps === 7) || { why: JSON.stringify(r) };
+  });
+
+  await check('radius scales panels but leaves capsules alone', ()=>{
+    const r = ev(`(()=>{
+      const s=document.getElementById('rad'); s.value=50; s.dispatchEvent(new Event('input'));
+      const clock=panels.find(p=>p.el.classList.contains('clock'));
+      const pill=panels.find(p=>p.el.classList.contains('pill'));
+      const got={clock:clock.radius, pill:pill.radius};
+      s.value=30; s.dispatchEvent(new Event('input'));
+      return got;
+    })()`);
+    return (Math.abs(r.clock - 50) < 0.01 && r.pill === 999) || { why: JSON.stringify(r) };
+  });
+
+  await check('idle frames are skipped when nothing moves', ()=>{
+    const r = ev(`(()=>{
+      wallMotion=false; dirty=false;
+      document.dispatchEvent(new Event('pointermove',{bubbles:true}));
+      const woke=dirty; dirty=false;
+      return {woke, idle: dirty===false};
+    })()`);
+    return (r.woke && r.idle) || { why: JSON.stringify(r) };
+  });
+
+  await check('panel rects follow the dom every frame', ()=>{
+    const r = ev(`(()=>{
+      const p=panels.find(x=>x.el.classList.contains('clock'));
+      const a=JSON.stringify(p.rect);
+      p.el.style.left='240px'; readLayout(DPR);
+      const b=JSON.stringify(p.rect); p.el.style.left='';
+      return a!==b;
+    })()`);
+    return r === true || { why: 'rect did not move with the element' };
+  });
+
+  await check('a broken shader shows the log instead of a black page', ()=>{
+    const r = ev(`(()=>{
+      let threw=false;
+      try{ fail('probe','line 1: probe detail'); }catch(e){ threw=true; }
+      const d=document.getElementById('dead');
+      const shown=getComputedStyle(d).display==='grid';
+      const safe=!!d.querySelector('pre');
+      d.style.display='none';
+      return {threw, shown, safe};
+    })()`);
+    return (r.threw && r.shown && r.safe) || { why: JSON.stringify(r) };
+  });
+
+  await check('control panel can be scrolled by touch', ()=>{
+    const v = win.getComputedStyle(doc.querySelector('.panel')).touchAction;
+    return v === 'pan-y' || { why: 'touch-action=' + v };
+  });
+
+  const alive = await rafAlive(win);
+  if(!alive) return await check('frame rate', ()=> 'skip');
+  const n = await win.eval(`(()=>new Promise(r=>{let n=0;const t0=performance.now();
+    (function f(){n++;const d=performance.now()-t0;
+      d<1400?requestAnimationFrame(f):r(Math.round(n/(d/1000)));})();}))()`);
+  await check('frame rate', ()=> n >= 50 ? { ok: true, why: n + ' fps' } : { why: n + ' fps' });
+}
+
+/* ------------------------------------------------------------------ */
+
+(async function run(){
+  const started = performance.now();
+  try{
+    const ctx = await cssSuite();
+    await cssPerf(ctx);
+    await glSuite();
+  }catch(err){
+    line('fail', 'harness crashed', String(err && err.stack || err));
+  }
+  const ms = Math.round(performance.now() - started);
+  sum.innerHTML = '<b>' + results.pass + ' pass</b> · '
+    + results.fail + ' fail · ' + results.skip + ' skip <span style="opacity:.45">('
+    + ms + ' ms)</span>';
+  sum.style.color = results.fail ? '#ff8a92' : '#4ad07a';
+  document.title = (results.fail ? 'FAIL ' : 'ok ') + results.pass + '/' +
+    (results.pass + results.fail);
+  window.__results = results;
+})();
+</script>
+</body>
+</html>

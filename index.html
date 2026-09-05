@@ -457,8 +457,10 @@ const CALM = matchMedia('(prefers-reduced-motion: reduce)').matches;
 if(CALM) cfg.motion = false;
 
 
-const clamp = (v,a,b)=> v<a ? a : v>b ? b : v;
-const byte = v => v<0 ? 0 : v>255 ? 255 : v|0;
+/* declarations, not arrow consts: these get stringified into the worker and
+   an arrow expression arrives there without a name */
+function clamp(v, a, b){ return v < a ? a : v > b ? b : v; }
+function byte(v){ return v < 0 ? 0 : v > 255 ? 255 : v|0; }
 
 /* ---------- geometry ---------- */
 
@@ -479,23 +481,18 @@ function sdf(px, py, hw, hh, r, n){
 
 /* ---------- texture bakery ---------- */
 
-const MAX_PIXELS = 1.4e6;
-const mapCache = new Map();
-
 /* integer powers by squaring: Math.pow with a large exponent is the
    single most expensive call in the lighting pass */
 function pow46(x){ const a=x*x, b=a*a, c=b*b, d=c*c, e=d*d; return e*c*b*a; }
 function pow26(x){ const a=x*x, b=a*a, c=b*b, d=c*c; return d*c*a; }
 
-function bake(w, h, radius, bevel, n, lightDeg, quality){
-  const q = quality || 1;
-  const key = [w, h, radius.toFixed(1), bevel.toFixed(1), n, lightDeg,
-               window.devicePixelRatio || 1, q].join(':');
-  const hit = mapCache.get(key);
-  if(hit) return hit;
+/* ---------- pixel math ----------
+   Also stringified into the worker, so it must not reach for anything
+   outside itself except the helpers listed in WORKER_PARTS. */
 
-  let dpr = Math.min(2, window.devicePixelRatio || 1) * q;
-  if(w*h*dpr*dpr > MAX_PIXELS) dpr = Math.sqrt(MAX_PIXELS/(w*h));
+function bakeFields(w, h, radius, bevel, n, lightDeg, baseDpr){
+  let dpr = baseDpr;
+  if(w*h*dpr*dpr > 9e5) dpr = Math.sqrt(9e5/(w*h));
 
   const cw = Math.max(4, Math.round(w*dpr));
   const ch = Math.max(4, Math.round(h*dpr));
@@ -503,15 +500,9 @@ function bake(w, h, radius, bevel, n, lightDeg, quality){
   const bv = Math.max(2, bevel*dpr);
   const hw = cw/2, hh = ch/2;
 
-  /* height field: 0 at the outline, 1 where the bevel ends.
-     A circular arc gives a near vertical wall at the very edge,
-     which is what makes the Apple rim compress the background. */
   const H = new Float32Array(cw*ch);
   const T = new Float32Array(cw*ch);
   const A = new Float32Array(cw*ch);
-
-  /* per row span of pixels that sit deeper than the bevel. everything
-     strictly inside it is flat, and the whole lighting pass can skip it */
   const deepLo = new Int32Array(ch);
   const deepHi = new Int32Array(ch);
 
@@ -536,8 +527,6 @@ function bake(w, h, radius, bevel, n, lightDeg, quality){
   const hh3 = Math.sqrt(Lx*Lx + Ly*Ly + (Lz+1)*(Lz+1));
   const Hx = Lx/hh3, Hy = Ly/hh3, Hz = (Lz + 1)/hh3;
 
-  /* bounce light from the opposite side: real glass lights up on both
-     rims, the far one dimmer and broader */
   const Fx = -Lx, Fy = -Ly, Fz = Lz;
   const fh = Math.sqrt(Fx*Fx + Fy*Fy + (Fz+1)*(Fz+1));
   const Gx = Fx/fh, Gy = Fy/fh, Gz = (Fz + 1)/fh;
@@ -547,11 +536,10 @@ function bake(w, h, radius, bevel, n, lightDeg, quality){
   const shade = new ImageData(cw, ch);
   const dp = disp.data, sp = spec.data, sh = shade.data;
 
-  const SLOPE = 0.34;   // how hard the encoded offset saturates
-  const NSTR  = 1.35;   // normal strength for the lighting pass
-  const EDGE  = clamp(2.2*dpr/bv, 0.03, 0.45);   // width of the bright hairline
+  const SLOPE = 0.34;
+  const NSTR  = 1.35;
+  const EDGE  = clamp(2.2*dpr/bv, 0.03, 0.45);
 
-  /* the flat interior has one answer, so work it out once */
   const flatLine = Math.exp(-(1/EDGE)*Math.sqrt(1/EDGE)*2.4);
   const flatSpec = byte(clamp(
       pow46(Math.max(Hz, 0))*1.55
@@ -563,7 +551,6 @@ function bake(w, h, radius, bevel, n, lightDeg, quality){
     const yUp = y > 0 ? y-1 : 0;
     const yDn = y < ch-1 ? y+1 : ch-1;
 
-    /* a pixel is flat only if its four neighbours are deep too */
     let flatLo = -1, flatHi = -2;
     if(deepLo[y] >= 0 && deepLo[yUp] >= 0 && deepLo[yDn] >= 0){
       flatLo = Math.max(deepLo[y], deepLo[yUp], deepLo[yDn]) + 1;
@@ -587,11 +574,8 @@ function bake(w, h, radius, bevel, n, lightDeg, quality){
       const yt = H[yUp*cw + x];
       const yb = H[yDn*cw + x];
 
-      /* multiply by bv so the encoded slope is dimensionless:
-         changing the edge width no longer changes the strength */
       const gx = (xr - xl) * 0.5 * bv;
       const gy = (yb - yt) * 0.5 * bv;
-
       const i = (y*cw + x)*4;
 
       dp[i]   = byte(128 + 127*Math.tanh(gx*SLOPE));
@@ -633,23 +617,113 @@ function bake(w, h, radius, bevel, n, lightDeg, quality){
     }
   }
 
-  const out = {
-    disp:  toURL(disp,  cw, ch),
-    spec:  toURL(spec,  cw, ch),
-    shade: toURL(shade, cw, ch),
-  };
-
-  if(mapCache.size > 90) mapCache.clear();
-  mapCache.set(key, out);
-  return out;
+  return { cw: cw, ch: ch, disp: disp, spec: spec, shade: shade };
 }
 
+/* ---------- baking, off the main thread ----------
+   Encoding the three pngs was 171 ms of a 229 ms bake at 1440x880, and all
+   of it ran on the main thread, so every geometry change dropped frames.
+   The worker gets the exact same source through String(fn). */
 
-function toURL(img, w, h){
-  const cv = document.createElement('canvas');
-  cv.width = w; cv.height = h;
-  cv.getContext('2d').putImageData(img, 0, 0);
-  return cv.toDataURL();
+const WORKER_PARTS = [clamp, byte, corner, sdf, pow46, pow26, bakeFields];
+
+const WORKER_MAIN = [
+  'self.onmessage = function(e){',
+  '  var q = e.data;',
+  '  var f = bakeFields(q.w, q.h, q.radius, q.bevel, q.n, q.light, q.dpr);',
+  '  var png = function(img){',
+  '    var cv = new OffscreenCanvas(f.cw, f.ch);',
+  '    cv.getContext("2d").putImageData(img, 0, 0);',
+  '    return cv.convertToBlob({ type: "image/png" });',
+  '  };',
+  '  Promise.all([png(f.disp), png(f.spec), png(f.shade)]).then(function(b){',
+  '    var r = new FileReaderSync();',
+  '    self.postMessage({ key: q.key, maps: {',
+  '      disp:  r.readAsDataURL(b[0]),',
+  '      spec:  r.readAsDataURL(b[1]),',
+  '      shade: r.readAsDataURL(b[2])',
+  '    }});',
+  '  });',
+  '};'
+].join('\n');
+
+const DPR = Math.min(2, window.devicePixelRatio || 1);
+const mapCache = new Map();
+const waiting = new Map();
+const pendingJobs = new Map();
+
+let baker = null;
+try{
+  if(typeof Worker === 'function' && typeof OffscreenCanvas === 'function'){
+    const src = WORKER_PARTS.map(String).join('\n\n') + '\n' + WORKER_MAIN;
+    baker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    baker.onmessage = onBaked;
+    baker.onerror = ()=>{ baker = null; drainWaiting(); };
+  }
+}catch(err){ baker = null; }
+
+function encodeHere(fields){
+  const png = img =>{
+    const cv = document.createElement('canvas');
+    cv.width = fields.cw; cv.height = fields.ch;
+    cv.getContext('2d').putImageData(img, 0, 0);
+    return cv.toDataURL();
+  };
+  return { disp: png(fields.disp), spec: png(fields.spec), shade: png(fields.shade) };
+}
+
+function onBaked(e){
+  const key = e.data.key, maps = e.data.maps;
+  if(mapCache.size > 60) mapCache.clear();
+  mapCache.set(key, maps);
+  const queue = waiting.get(key) || [];
+  waiting.delete(key);
+  pendingJobs.delete(key);
+  queue.forEach(g=>{
+    if(g.dead) return;
+    g.applyMaps(maps);
+    g.optics();
+  });
+}
+
+/* if the worker dies, finish the outstanding work here rather than leaving
+   every element without its maps */
+function drainWaiting(){
+  waiting.forEach((queue, key)=>{
+    const job = pendingJobs.get(key);
+    if(!job) return;
+    const maps = encodeHere(bakeFields(job.w, job.h, job.radius, job.bevel,
+                                       job.n, job.light, job.dpr));
+    mapCache.set(key, maps);
+    queue.forEach(g=>{ if(!g.dead){ g.applyMaps(maps); g.optics(); } });
+  });
+  waiting.clear();
+  pendingJobs.clear();
+}
+
+/* true when the caller can carry straight on */
+function requestMaps(glass, key, job){
+  const hit = mapCache.get(key);
+  if(hit){ glass.applyMaps(hit); return true; }
+
+  if(!baker){
+    const maps = encodeHere(bakeFields(job.w, job.h, job.radius, job.bevel,
+                                       job.n, job.light, job.dpr));
+    if(mapCache.size > 60) mapCache.clear();
+    mapCache.set(key, maps);
+    glass.applyMaps(maps);
+    return true;
+  }
+
+  const queue = waiting.get(key);
+  if(queue){ if(queue.indexOf(glass) < 0) queue.push(glass); return false; }
+  waiting.set(key, [glass]);
+  pendingJobs.set(key, job);
+  baker.postMessage({
+    key: key, w: job.w, h: job.h, radius: job.radius,
+    bevel: job.bevel, n: job.n, light: job.light, dpr: job.dpr
+  });
+  return false;
 }
 
 /* ---------- SVG filter ---------- */
@@ -750,21 +824,29 @@ class Glass{
     return { w, h, r, n };
   }
 
+  applyMaps(maps){
+    this.maps = maps;
+    this.el.style.setProperty('--spec-map',  `url("${maps.spec}")`);
+    this.el.style.setProperty('--shade-map', `url("${maps.shade}")`);
+  }
+
   sync(force){
     const m = this.metrics();
     if(m.hidden) return;
     const bevel = Math.min(cfg.bevel, Math.min(m.w, m.h)/2.2);
-    const sig = [m.w, m.h, m.r.toFixed(1), bevel.toFixed(1), m.n, cfg.light].join(':');
+    const sig = [m.w, m.h, m.r.toFixed(1), bevel.toFixed(1), m.n, cfg.light, DPR].join(':');
+
+    this.relight();
 
     if(force || sig !== this.geoSig){
       this.geoSig = sig;
-      this.maps = bake(m.w, m.h, m.r, bevel, m.n, cfg.light);
-      this.el.style.setProperty('--spec-map',  `url("${this.maps.spec}")`);
-      this.el.style.setProperty('--shade-map', `url("${this.maps.shade}")`);
       this.el.style.setProperty('--gsize', Math.round(Math.max(m.w, m.h)*0.7) + 'px');
+      /* the worker answers later; the element keeps the maps it already has
+         until then, and optics runs again when they land */
+      if(!requestMaps(this, sig, { w:m.w, h:m.h, radius:m.r, bevel:bevel,
+                                   n:m.n, light:cfg.light, dpr:DPR })) return;
     }
     this.optics(m);
-    this.relight();
   }
 
   optics(m){
@@ -978,28 +1060,55 @@ function refresh(level){          // 1 = css, 2 = optics, 3 = geometry
 
 /* ---------- dragging ---------- */
 
+/* a press is not a drag. lifting the element out of flow on pointerdown made
+   every sibling in the toolbar jump left, and a plain click was enough to do
+   it. wait for real movement, then leave a spacer behind so the row holds. */
+const DRAG_SLOP = 4;
 let drag = null;
+
+function lift(d){
+  const el = d.el;
+  const box = el.getBoundingClientRect();
+
+  if(getComputedStyle(el).position === 'relative'){
+    const hold = document.createElement('div');
+    hold.className = 'lg-spacer';
+    hold.style.cssText = 'width:' + box.width + 'px;height:' + box.height + 'px;flex:0 0 auto;';
+    el.parentNode.insertBefore(hold, el);
+    d.spacer = hold;
+  }
+
+  el.style.left = box.left + 'px';
+  el.style.top  = box.top + 'px';
+  el.style.right = 'auto';
+  el.style.bottom = 'auto';
+  el.style.position = 'fixed';
+  el.style.setProperty('--bx', '0px');
+  el.style.setProperty('--by', '0px');
+  d.dx = d.startX - box.left;
+  d.dy = d.startY - box.top;
+  d.lifted = true;
+}
 
 document.querySelectorAll('.draggable').forEach(el=>{
   const glass = sheets.find(g=> g.el === el);
 
   el.addEventListener('pointerdown', e=>{
     if(e.target.closest('input, button')) return;
-    const box = el.getBoundingClientRect();
-    el.style.left = box.left + 'px';
-    el.style.top  = box.top + 'px';
-    el.style.right = 'auto';
-    el.style.bottom = 'auto';
-    el.style.position = 'fixed';
-    el.style.setProperty('--bx', '0px');
-    el.style.setProperty('--by', '0px');
-    drag = { el, glass, dx: e.clientX - box.left, dy: e.clientY - box.top, px: e.clientX, py: e.clientY };
+    drag = { el, glass, lifted:false, spacer:null,
+             startX:e.clientX, startY:e.clientY, px:e.clientX, py:e.clientY };
     el.setPointerCapture(e.pointerId);
     glass && glass.squash(0.972, 0.972);
   });
 
   el.addEventListener('pointermove', e=>{
     if(!drag || drag.el !== el) return;
+
+    if(!drag.lifted){
+      if(Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < DRAG_SLOP) return;
+      lift(drag);
+    }
+
     const vx = e.clientX - drag.px, vy = e.clientY - drag.py;
     drag.px = e.clientX; drag.py = e.clientY;
     el.style.left = (e.clientX - drag.dx) + 'px';
