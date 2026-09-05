@@ -646,23 +646,29 @@ function bakeFields(w, h, radius, bevel, n, lightDeg, baseDpr){
 
 const WORKER_PARTS = [clamp, byte, corner, sdf, pow46, pow26, bakeFields];
 
+/* Every path out of here has to answer, including the ones that fail. Only
+   one shape sits in the worker at a time, so a job that goes quiet - and a
+   rejected convertToBlob raises no error event - stops the queue for good. */
 const WORKER_MAIN = [
+  'function say(k, err){ self.postMessage({ key: k, error: String(err && err.message || err) }); }',
   'self.onmessage = function(e){',
   '  var q = e.data;',
-  '  var f = bakeFields(q.w, q.h, q.radius, q.bevel, q.n, q.light, q.dpr);',
-  '  var png = function(img){',
-  '    var cv = new OffscreenCanvas(f.cw, f.ch);',
-  '    cv.getContext("2d").putImageData(img, 0, 0);',
-  '    return cv.convertToBlob({ type: "image/png" });',
-  '  };',
-  '  Promise.all([png(f.disp), png(f.spec), png(f.shade)]).then(function(b){',
-  '    var r = new FileReaderSync();',
-  '    self.postMessage({ key: q.key, maps: {',
-  '      disp:  r.readAsDataURL(b[0]),',
-  '      spec:  r.readAsDataURL(b[1]),',
-  '      shade: r.readAsDataURL(b[2])',
-  '    }});',
-  '  });',
+  '  try{',
+  '    var f = bakeFields(q.w, q.h, q.radius, q.bevel, q.n, q.light, q.dpr);',
+  '    var png = function(img){',
+  '      var cv = new OffscreenCanvas(f.cw, f.ch);',
+  '      cv.getContext("2d").putImageData(img, 0, 0);',
+  '      return cv.convertToBlob({ type: "image/png" });',
+  '    };',
+  '    Promise.all([png(f.disp), png(f.spec), png(f.shade)]).then(function(b){',
+  '      var r = new FileReaderSync();',
+  '      self.postMessage({ key: q.key, maps: {',
+  '        disp:  r.readAsDataURL(b[0]),',
+  '        spec:  r.readAsDataURL(b[1]),',
+  '        shade: r.readAsDataURL(b[2])',
+  '      }});',
+  '    }).catch(function(err){ say(q.key, err); });',
+  '  }catch(err){ say(q.key, err); }',
   '};'
 ].join('\n');
 
@@ -671,15 +677,30 @@ const mapCache = new Map();
 const waiting = new Map();
 const pendingJobs = new Map();
 
+/* keys asked for but not yet handed to the worker, oldest first */
+const backlog = [];
+let inFlight = null, flightTimer = 0;
+
+/* far past any real bake - eight panels together cost the worker 240 ms at
+   dpr 2. A job still out after this means the worker is gone, not slow. */
+let BAKE_TIMEOUT_MS = 8000;
+
 let baker = null;
 try{
   if(typeof Worker === 'function' && typeof OffscreenCanvas === 'function'){
     const src = WORKER_PARTS.map(String).join('\n\n') + '\n' + WORKER_MAIN;
-    baker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })));
+    const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    baker = new Worker(url);
+    URL.revokeObjectURL(url);
     baker.onmessage = onBaked;
     baker.onerror = ()=>{ baker = null; drainWaiting(); };
   }
 }catch(err){ baker = null; }
+
+function cacheMaps(key, maps){
+  if(mapCache.size > 60) mapCache.clear();
+  mapCache.set(key, maps);
+}
 
 function encodeHere(fields){
   const png = img =>{
@@ -691,13 +712,78 @@ function encodeHere(fields){
   return { disp: png(fields.disp), spec: png(fields.spec), shade: png(fields.shade) };
 }
 
-function onBaked(e){
-  const key = e.data.key, maps = e.data.maps;
-  if(mapCache.size > 60) mapCache.clear();
-  mapCache.set(key, maps);
-  const queue = waiting.get(key) || [];
+function bakeHere(key, job){
+  const maps = encodeHere(bakeFields(job.w, job.h, job.radius, job.bevel,
+                                     job.n, job.light, job.dpr));
+  cacheMaps(key, maps);
+  return maps;
+}
+
+/* geoSig is the shape an element currently wants, so a key no live element
+   still names is a shape the slider has already scrolled past */
+function stillWanted(key){
+  const queue = waiting.get(key);
+  return !!queue && queue.some(g=> !g.dead && g.geoSig === key);
+}
+
+function forget(key){
   waiting.delete(key);
   pendingJobs.delete(key);
+}
+
+/* The worker bakes one shape at a time, and a full set of panels costs it
+   90 ms at dpr 1 and about 240 ms at dpr 2 - longer than the gap between
+   two drag steps. Handing it the whole drag would queue work faster than it
+   can finish it, and postMessage cannot be taken back: the page then stays
+   busy for seconds after the pointer stops, on shapes nobody will see.
+   So keep exactly one job in the worker and drop the stale head of the
+   backlog every time it comes free. */
+function pumpBaker(){
+  if(inFlight || !baker) return;
+  while(backlog.length){
+    const key = backlog.shift();
+    if(!stillWanted(key)){ forget(key); continue; }
+    const job = pendingJobs.get(key);
+    if(!job){ forget(key); continue; }
+    inFlight = key;
+    clearTimeout(flightTimer);
+    flightTimer = setTimeout(()=>{
+      /* it took a shape and never gave it back. treat it as gone and finish
+         what is still on screen here, rather than waiting out the tab */
+      if(inFlight === key){ baker = null; drainWaiting(); }
+    }, BAKE_TIMEOUT_MS);
+    baker.postMessage({
+      key: key, w: job.w, h: job.h, radius: job.radius,
+      bevel: job.bevel, n: job.n, light: job.light, dpr: job.dpr
+    });
+    return;
+  }
+}
+
+function onBaked(e){
+  const key = e.data.key, maps = e.data.maps;
+  if(inFlight === key){ inFlight = null; clearTimeout(flightTimer); }
+
+  if(!maps){
+    /* this one shape did not survive the worker. bake it here so the element
+       is not left bare, and keep the rest of the queue moving */
+    const job = pendingJobs.get(key), wanted = stillWanted(key);
+    const queue = waiting.get(key) || [];
+    forget(key);
+    pumpBaker();
+    if(job && wanted){
+      const local = bakeHere(key, job);
+      queue.forEach(g=>{ if(!g.dead){ g.applyMaps(local); g.optics(); } });
+    }
+    return;
+  }
+
+  cacheMaps(key, maps);
+  const queue = waiting.get(key) || [];
+  forget(key);
+  /* start the next shape before touching the dom, so the worker is busy
+     again while this one repaints */
+  pumpBaker();
   queue.forEach(g=>{
     if(g.dead) return;
     g.applyMaps(maps);
@@ -706,18 +792,23 @@ function onBaked(e){
 }
 
 /* if the worker dies, finish the outstanding work here rather than leaving
-   every element without its maps */
+   every element without its maps - but only the shapes something on screen
+   is still waiting for, or the recovery is itself a freeze */
 function drainWaiting(){
+  backlog.length = 0;
+  inFlight = null;
+  clearTimeout(flightTimer);
+  const live = [];
   waiting.forEach((queue, key)=>{
     const job = pendingJobs.get(key);
-    if(!job) return;
-    const maps = encodeHere(bakeFields(job.w, job.h, job.radius, job.bevel,
-                                       job.n, job.light, job.dpr));
-    mapCache.set(key, maps);
-    queue.forEach(g=>{ if(!g.dead){ g.applyMaps(maps); g.optics(); } });
+    if(job && stillWanted(key)) live.push({ key: key, queue: queue, job: job });
   });
   waiting.clear();
   pendingJobs.clear();
+  live.forEach(item=>{
+    const maps = bakeHere(item.key, item.job);
+    item.queue.forEach(g=>{ if(!g.dead){ g.applyMaps(maps); g.optics(); } });
+  });
 }
 
 /* true when the caller can carry straight on */
@@ -725,23 +816,14 @@ function requestMaps(glass, key, job){
   const hit = mapCache.get(key);
   if(hit){ glass.applyMaps(hit); return true; }
 
-  if(!baker){
-    const maps = encodeHere(bakeFields(job.w, job.h, job.radius, job.bevel,
-                                       job.n, job.light, job.dpr));
-    if(mapCache.size > 60) mapCache.clear();
-    mapCache.set(key, maps);
-    glass.applyMaps(maps);
-    return true;
-  }
+  if(!baker){ glass.applyMaps(bakeHere(key, job)); return true; }
 
   const queue = waiting.get(key);
   if(queue){ if(queue.indexOf(glass) < 0) queue.push(glass); return false; }
   waiting.set(key, [glass]);
   pendingJobs.set(key, job);
-  baker.postMessage({
-    key: key, w: job.w, h: job.h, radius: job.radius,
-    bevel: job.bevel, n: job.n, light: job.light, dpr: job.dpr
-  });
+  backlog.push(key);
+  pumpBaker();
   return false;
 }
 
@@ -1582,8 +1664,12 @@ function tick(){
   document.getElementById('sbday').textContent =
     DAYS[now.getDay()] + ', ' + MONTHS[now.getMonth()] + ' ' + now.getDate();
 }
-tick();
-setInterval(tick, 10000);
+/* on the minute, not every ten seconds: the old interval could show a minute
+   that had already gone, and woke the page six times to do it */
+(function schedule(){
+  tick();
+  setTimeout(schedule, 60000 - (Date.now() % 60000) + 20);
+})();
 
 /* ---------- frame counter ---------- */
 

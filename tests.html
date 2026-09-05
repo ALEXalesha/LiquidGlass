@@ -337,6 +337,100 @@ async function cssPerf(ctx){
   await check('rebuilding every filter stays under 5 ms', ()=>
     optics < 5 ? { ok: true, why: optics + ' ms' } : { why: optics + ' ms' });
 
+  /* Every step of a geometry slider asks for a fresh shape for every element,
+     and the worker bakes one at a time. Whatever the slider has already moved
+     past is work nobody will ever look at, so it has to be dropped rather than
+     queued - otherwise a drag schedules bakes faster than they can finish and
+     the page stays busy long after the pointer stops. */
+  ev(`(()=>{ window.__bakeReal = baker.postMessage.bind(baker); window.__posted = 0;
+    baker.postMessage = j =>{ window.__posted++; window.__bakeReal(j); }; })()`);
+  ev(`(()=>{ const s = document.getElementById('light');
+    for(let i=0;i<20;i++){ s.value = 10 + i*7; s.dispatchEvent(new Event('input')); run(3); } })()`);
+
+  const drag = await new Promise(res=>{
+    const t0 = performance.now();
+    (function poll(){
+      if(ev('waiting.size') === 0 || performance.now() - t0 > 20000)
+        return res({ posted: ev('window.__posted'), ms: Math.round(performance.now() - t0) });
+      setTimeout(poll, 40);
+    })();
+  });
+  ev('(()=>{ baker.postMessage = window.__bakeReal; delete window.__bakeReal; delete window.__posted; })()');
+
+  const live = ev('sheets.length');
+  await check('a slider drag drops the shapes it has already scrolled past', ()=>
+    drag.posted <= live * 3
+      ? { ok: true, why: drag.posted + ' bakes for 20 steps, ' + drag.ms + ' ms to settle' }
+      : { why: drag.posted + ' bakes queued for 20 steps of ' + live + ' elements, '
+             + drag.ms + ' ms to settle' });
+
+  await check('the drag still lands on the value it was released at', ()=>
+    ev('sheets.every(g=> g.metrics().hidden || (g.maps && g.shapeSig.endsWith(g.geoSig)))')
+      || { why: 'an element is showing a shape it no longer wants' });
+
+  /* If the worker dies the outstanding work falls back to the main thread. It
+     must fall back to the shapes still on screen, not to every frame of the
+     drag that led here, or the recovery is itself a freeze. */
+  await check('a dead worker does not bake shapes nobody is waiting for', ()=>{
+    const r = ev(`(()=>{
+      const key = 'stale:1:2:3:4:5:6';
+      waiting.set(key, [sheets[0]]);
+      pendingJobs.set(key, { w:220, h:140, radius:20, bevel:14, n:2, light:90, dpr:1 });
+      const t = performance.now();
+      drainWaiting();
+      return { baked: mapCache.has(key), ms: +(performance.now()-t).toFixed(1),
+               left: waiting.size + pendingJobs.size };
+    })()`);
+    return (!r.baked && r.left === 0)
+      || { why: 'baked a shape nobody wants in ' + r.ms + ' ms on the main thread' };
+  });
+
+  /* One shape in the worker at a time means one shape that can wedge it. */
+  await check('a shape the worker cannot encode does not stop the queue', ()=>{
+    const r = ev(`(()=>{
+      const key = 'boom:1:2:3:4:5:6';
+      waiting.set(key, [sheets[0]]);
+      pendingJobs.set(key, { w:120, h:80, radius:16, bevel:12, n:2, light:90, dpr:1 });
+      inFlight = key;
+      onBaked({ data: { key: key, error: 'convertToBlob failed' } });
+      return { flight: inFlight, held: waiting.has(key) || pendingJobs.has(key) };
+    })()`);
+    if(r.flight !== null || r.held) return { why: JSON.stringify(r) };
+    ev('(()=>{ mapCache.clear(); sheets.forEach(g=> g.sync(true)); })()');
+    return new Promise(res=>{
+      const t0 = performance.now();
+      (function poll(){
+        if(ev('waiting.size') === 0)
+          return res(ev('sheets.every(g=> g.metrics().hidden || !!g.maps)')
+            || { why: 'elements were left without maps' });
+        if(performance.now() - t0 > 8000) return res({ why: 'the queue never moved again' });
+        setTimeout(poll, 40);
+      })();
+    });
+  });
+
+  await check('a worker that never answers falls back to the main thread', ()=>{
+    const queued = ev(`(()=>{
+      const held = baker, real = baker.postMessage.bind(baker);
+      baker.postMessage = ()=>{};           /* swallow it, the way a dead one would */
+      BAKE_TIMEOUT_MS = 60;
+      window.__restore = ()=>{ held.postMessage = real; baker = held; BAKE_TIMEOUT_MS = 8000; };
+      mapCache.clear();
+      sheets.forEach(g=> g.sync(true));
+      return waiting.size;
+    })()`);
+    if(!queued) return { why: 'nothing was queued to time out' };
+    return new Promise(res=>{
+      setTimeout(()=>{
+        const gone = ev('baker === null');
+        const dressed = ev('sheets.every(g=> g.metrics().hidden || !!g.maps)');
+        ev('(()=>{ window.__restore(); delete window.__restore; })()');
+        res((gone && dressed)
+          || { why: 'gave up on the worker=' + gone + ', elements dressed=' + dressed });
+      }, 1200);
+    });
+  });
+
   const alive = await rafAlive(ctx.win);
   if(!alive){
     await check('frame rate with a still wallpaper', ()=> 'skip');
