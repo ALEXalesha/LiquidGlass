@@ -67,7 +67,9 @@
 
   .panel{ right:24px; top:58px; width:284px; padding:18px 20px 18px;
     max-height:calc(100vh - 110px); overflow-y:auto; overflow-x:hidden;
-    scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.28) transparent; }
+    scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.28) transparent;
+    touch-action: pan-y; }
+  .panel input[type=range]{ touch-action: none; }
   .panel h3{ margin:0 0 3px; font-size:16px; }
   .panel .sub{ font-size:12px; opacity:.62; margin-bottom:6px; }
   .panel .grp{ font-size:10.5px; font-weight:700; letter-spacing:.7px; text-transform:uppercase;
@@ -107,6 +109,10 @@
     .panel{ width:246px; right:16px; }
     .dock{ gap:10px; padding:12px 14px; }
     .app{ width:48px; height:48px; font-size:24px; }
+  }
+
+  @media (prefers-reduced-motion: reduce){
+    .app{ transition: none; }
   }
 
   #dead{ position:fixed; inset:0; z-index:9; display:none; place-items:center; text-align:center;
@@ -184,7 +190,7 @@
     <div class="row"><label>Rim vividness <b id="vRim">0.45</b></label><input id="rim" type="range" min="0" max="1.5" step="0.02" value="0.45"></div>
     <div class="row"><label>Spectral samples <b id="vTaps">14</b></label><input id="taps" type="range" min="1" max="32" value="14"></div>
 
-    <div class="stat"><span>Wallpaper motion</span><input id="wall" type="checkbox" checked style="accent-color:#34c759"></div>
+    <div class="stat"><span>Wallpaper motion</span><input id="wall" type="checkbox" style="accent-color:#34c759"></div>
     <div class="stat"><span>Frame</span><b id="fps">--</b></div>
     <div class="foot">Everything you see through the panels is refracted per pixel by <code>refract()</code>. Drag the panels. <a href="index.html">CSS + SVG version</a></div>
   </div>
@@ -196,11 +202,31 @@
 "use strict";
 
 const canvas = document.getElementById('gl');
-const gl = canvas.getContext('webgl2', { antialias:false, alpha:false, premultipliedAlpha:false });
-if(!gl){
-  document.getElementById('dead').style.display = 'grid';
-  throw new Error('no webgl2');
+
+/* without this a shader that fails to build just stops the script and leaves
+   a black page, which tells the user nothing */
+function fail(title, detail){
+  const dead = document.getElementById('dead');
+  const box = document.createElement('div');
+  const head = document.createElement('b');
+  head.textContent = title;
+  box.appendChild(head);
+  if(detail){
+    const pre = document.createElement('pre');
+    pre.textContent = detail;
+    pre.style.cssText = 'text-align:left;max-width:900px;max-height:50vh;overflow:auto;'
+      + 'font-size:11px;line-height:1.4;opacity:.75;margin-top:14px';
+    box.appendChild(pre);
+  }
+  dead.textContent = '';
+  dead.appendChild(box);
+  dead.style.display = 'grid';
+  throw new Error(title);
 }
+
+const gl = canvas.getContext('webgl2', { antialias:false, alpha:false, premultipliedAlpha:false });
+if(!gl) fail('WebGL2 not available',
+             'Check chrome://gpu, or open the CSS version instead.');
 
 /* a driver reset or a gpu switch kills the context. keep the settings and
    come back instead of leaving a black page */
@@ -467,9 +493,14 @@ function program(fs){
   return { p, u };
 }
 
-const progWall  = program(FS_WALL);
-const progGlass = program(FS_GLASS);
-const progCopy  = program(FS_COPY);
+let progWall, progGlass, progCopy;
+try{
+  progWall  = program(FS_WALL);
+  progGlass = program(FS_GLASS);
+  progCopy  = program(FS_COPY);
+}catch(err){
+  fail('Shader failed to build', String(err && err.message || err));
+}
 
 const vao = gl.createVertexArray();
 gl.bindVertexArray(vao);
@@ -586,7 +617,7 @@ let W = 0, H = 0, DPR = 1;
 
 /* with a still wallpaper and nobody touching anything there is nothing new
    to draw, so idle frames cost nothing */
-let wallMotion = true;
+let wallMotion = !matchMedia('(prefers-reduced-motion: reduce)').matches;
 let dirty = true;
 const touch = ()=> dirty = true;
 document.addEventListener('pointerdown', touch, true);
@@ -744,7 +775,9 @@ radInput.addEventListener('input', ()=>{
 });
 radInput.dispatchEvent(new Event('input'));
 
-document.getElementById('wall').addEventListener('change', e=>{
+const wallToggle = document.getElementById('wall');
+wallToggle.checked = wallMotion;
+wallToggle.addEventListener('change', e=>{
   wallMotion = e.target.checked;
   dirty = true;
 });

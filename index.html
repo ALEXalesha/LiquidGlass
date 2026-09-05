@@ -123,6 +123,11 @@
 
   .lg > *{ position:relative; z-index:3; }
 
+  @media (prefers-reduced-motion: reduce){
+    .blob, .deco{ animation: none !important; }
+    .app, .switch .knob, .miniswitch .k, .seg button{ transition: none !important; }
+  }
+
   /* every frame of wallpaper motion invalidates the backdrop of all eight
      glass elements, so it is the single most expensive thing on the page */
   html.still .blob,
@@ -213,7 +218,9 @@
     position:fixed; top:62px; right:24px; z-index:7; width:272px; padding:18px 20px 20px;
     --radius:24px; max-height:calc(100vh - 116px); overflow:auto;
     scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.3) transparent;
+    touch-action: pan-y;
   }
+  .panel input[type=range]{ touch-action: none; }
   .panel h3{ margin:0 0 3px; font-size:16px; font-weight:700; }
   .panel .sub{ font-size:12px; opacity:.65; margin-bottom:14px; }
   .panel .ctrl{ margin:12px 0; position:relative; z-index:3; }
@@ -445,6 +452,9 @@ const cfg = {
   motion: true,
   wallMotion: false,
 };
+
+const CALM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+if(CALM) cfg.motion = false;
 
 
 const clamp = (v,a,b)=> v<a ? a : v>b ? b : v;
@@ -728,8 +738,10 @@ class Glass{
   metrics(){
     /* offsetWidth, not the client rect: the squash transform must not
        leak into the baked texture size */
-    const w = Math.max(4, this.el.offsetWidth);
-    const h = Math.max(4, this.el.offsetHeight);
+    const raw = this.el.offsetWidth, rawH = this.el.offsetHeight;
+    if(!raw || !rawH) return { hidden: true };
+    const w = Math.max(4, raw);
+    const h = Math.max(4, rawH);
     let r = parseFloat(getComputedStyle(this.el).borderTopLeftRadius) || 0;
     r = Math.min(r, Math.min(w, h)/2);
     const capsule = r >= Math.min(w, h)/2 - 0.6;
@@ -740,6 +752,7 @@ class Glass{
 
   sync(force){
     const m = this.metrics();
+    if(m.hidden) return;
     const bevel = Math.min(cfg.bevel, Math.min(m.w, m.h)/2.2);
     const sig = [m.w, m.h, m.r.toFixed(1), bevel.toFixed(1), m.n, cfg.light].join(':');
 
@@ -762,6 +775,7 @@ class Glass{
       return;
     }
     m = m || this.metrics();
+    if(m.hidden || !this.maps) return;
 
     /* the two feImage nodes carry data-url pngs. replacing the filter node
        makes chrome decode them again, so only do it when the chain actually
@@ -1048,7 +1062,7 @@ function toggle(id, fn, on){
 }
 toggle('togChroma', v=>{ cfg.chromatic = v; refresh(2); }, true);
 toggle('togSq',     v=>{ cfg.squircle = v; root.classList.toggle('no-sq', !v); refresh(3); }, true);
-toggle('togMotion', v=>{ cfg.motion = v; }, true);
+toggle('togMotion', v=>{ cfg.motion = v; }, !CALM);
 toggle('togRT',     v=>{ root.classList.toggle('reduce-tr', v); }, false);
 toggle('togWall',   v=>{ cfg.wallMotion = v; root.classList.toggle('still', !v); }, false);
 root.classList.toggle('still', !cfg.wallMotion);
@@ -1139,7 +1153,7 @@ function spawnMenu(model, anchor){
   const fromW = anchor.w || 20, fromH = anchor.h || 20;
   const cx = anchor.cx !== undefined ? anchor.cx : anchor.x;
   const cy = anchor.cy !== undefined ? anchor.cy : anchor.y;
-  el.animate([
+  if(!CALM) el.animate([
     { opacity:0, filter:'blur(7px)',
       transform:`translate(${(cx - (left + mw/2)).toFixed(1)}px, ${(cy - (top + mh/2)).toFixed(1)}px) scale(${(fromW/mw).toFixed(3)}, ${(fromH/mh).toFixed(3)})` },
     { opacity:1, filter:'blur(0px)', offset:.55,
@@ -1151,7 +1165,8 @@ function spawnMenu(model, anchor){
   el.querySelectorAll('.item').forEach((node, i)=>{
     node.animate(
       [{ opacity:0, transform:'translateY(9px)' }, { opacity:1, transform:'translateY(0)' }],
-      { duration:280, delay:90 + i*28, easing:'cubic-bezier(.2,.9,.3,1)', fill:'forwards' }
+      { duration: CALM ? 1 : 280, delay: CALM ? 0 : 90 + i*28,
+        easing:'cubic-bezier(.2,.9,.3,1)', fill:'forwards' }
     );
     node.addEventListener('click', e=>{
       e.stopPropagation();
