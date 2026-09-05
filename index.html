@@ -733,6 +733,17 @@ function forget(key){
   pendingJobs.delete(key);
 }
 
+/* An element that has already asked for a different shape gets nothing.
+   Painting a shape it abandoned also stamps its shapeSig with the shape it
+   now wants, and the maps it is really waiting for would then land on a
+   chain that sees no change and never rebuilds - leaving feImage holding a
+   displacement map from a shape nobody chose. Its own reply is still coming. */
+function dress(glass, key, maps){
+  if(glass.dead || glass.geoSig !== key) return;
+  glass.applyMaps(maps);
+  glass.optics();
+}
+
 /* The worker bakes one shape at a time, and a full set of panels costs it
    90 ms at dpr 1 and about 240 ms at dpr 2 - longer than the gap between
    two drag steps. Handing it the whole drag would queue work faster than it
@@ -775,7 +786,7 @@ function onBaked(e){
     pumpBaker();
     if(job && wanted){
       const local = bakeHere(key, job);
-      queue.forEach(g=>{ if(!g.dead){ g.applyMaps(local); g.optics(); } });
+      queue.forEach(g=> dress(g, key, local));
     }
     return;
   }
@@ -786,11 +797,7 @@ function onBaked(e){
   /* start the next shape before touching the dom, so the worker is busy
      again while this one repaints */
   pumpBaker();
-  queue.forEach(g=>{
-    if(g.dead) return;
-    g.applyMaps(maps);
-    g.optics();
-  });
+  queue.forEach(g=> dress(g, key, maps));
 }
 
 /* if the worker dies, finish the outstanding work here rather than leaving
@@ -809,7 +816,7 @@ function drainWaiting(){
   pendingJobs.clear();
   live.forEach(item=>{
     const maps = bakeHere(item.key, item.job);
-    item.queue.forEach(g=>{ if(!g.dead){ g.applyMaps(maps); g.optics(); } });
+    item.queue.forEach(g=> dress(g, item.key, maps));
   });
 }
 

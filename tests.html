@@ -472,6 +472,37 @@ async function cssPerf(ctx){
     });
   });
 
+  /* A shape that lands after the element has asked for a different one must
+     not be painted on: doing so also stamps its shapeSig, and the maps it is
+     really waiting for then arrive to a chain that never rebuilds - the
+     feImage keeps a displacement map from a shape nobody chose. */
+  ev(`(()=>{ const g = sheets[0]; mapCache.clear();
+    cfg.bevel = 8;  g.sync(true); window.__k1 = g.geoSig;
+    cfg.bevel = 44; g.sync(true); window.__k2 = g.geoSig; })()`);
+
+  const settled = await new Promise(res=>{
+    const t0 = performance.now();
+    (function poll(){
+      if(ev('waiting.size') === 0 && ev('backlog.length') === 0) return res(true);
+      if(performance.now() - t0 > 8000) return res(false);
+      setTimeout(poll, 30);
+    })();
+  });
+
+  await check('a late bake is not painted onto an element that moved on', ()=>{
+    if(!settled) return { why: 'the bakes never settled' };
+    const r = ev(`(()=>{ const g = sheets[0];
+      const href = document.getElementById(g.id).querySelector('feImage').getAttribute('href');
+      const d1 = (mapCache.get(window.__k1) || {}).disp;
+      const d2 = (mapCache.get(window.__k2) || {}).disp;
+      delete window.__k1; delete window.__k2;
+      cfg.bevel = 20; run(3);
+      return { differ: d1 !== d2, old: href === d1, wanted: href === d2 }; })()`);
+    if(!r.differ) return { skip: true, why: 'both shapes baked the same map here' };
+    return (r.wanted && !r.old)
+      || { why: 'the chain kept the displacement map of the shape it abandoned' };
+  });
+
   const alive = await rafAlive(ctx.win);
   if(!alive){
     await check('frame rate with a still wallpaper', ()=> 'skip');

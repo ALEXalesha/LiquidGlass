@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Liquid Glass — bench</title>
+<style>
+  body{ font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+        background:#0d0d13; color:#dfe3ea; margin:0; padding:26px 30px 60px; }
+  h1{ font-size:17px; margin:0 0 4px; }
+  .sub{ opacity:.55; margin-bottom:20px; font-size:12px; max-width:78ch; line-height:1.7; }
+  #sum{ font-size:14px; padding:10px 0 14px; border-bottom:1px solid #23232e; margin-bottom:10px; }
+  table{ border-collapse:collapse; font-size:12.5px; }
+  td{ padding:4px 14px 4px 0; vertical-align:baseline; white-space:nowrap; }
+  td.n{ text-align:right; font-variant-numeric:tabular-nums; font-weight:700; }
+  td.x{ text-align:right; opacity:.55; font-variant-numeric:tabular-nums; }
+  .bar{ display:inline-block; height:9px; border-radius:2px; background:#3f6bff; vertical-align:middle; }
+  .base .bar{ background:#8ab4ff; }
+  .best .bar{ background:#4ad07a; }
+  .dead{ color:#ff8a92; }
+  tr.pending td{ opacity:.35; }
+  iframe{ width:1100px; height:620px; border:0; border-radius:10px; margin-top:22px;
+          box-shadow:0 0 0 1px #23232e; max-width:100%; }
+  .note{ opacity:.5; font-size:11.5px; margin-top:18px; max-width:78ch; line-height:1.75; }
+  b.k{ color:#8ab4ff; font-weight:700; }
+</style>
+</head>
+<body>
+
+<h1>Liquid Glass — bench</h1>
+<div class="sub">
+  Drags one panel across the wallpaper under each configuration and counts frames.
+  Everything here is about one question: what does a moving panel cost, and which
+  part of it. <b class="k">Keep this tab in front and do not cover the window</b> —
+  a tab that is not being composited parks <code>requestAnimationFrame</code>, and
+  then every number comes back as a dash rather than as an invented figure.
+</div>
+
+<div id="sum">warming up…</div>
+<table><tbody id="out"></tbody></table>
+
+<iframe id="stage" src="index.html"></iframe>
+
+<div class="note">
+  <code>backdrop-filter</code> with <code>blur()</code> and <code>saturate()</code> is
+  handed to the gpu. The same property holding a <code>url()</code> filter with
+  <code>feImage</code> and <code>feDisplacementMap</code> inside is not, and is
+  rasterised on the cpu for the whole filter region, every frame the backdrop
+  underneath changes. That is the entire reason a drag is expensive, and it is why
+  the last row — no svg filter at all — is the ceiling nothing here can beat.
+</div>
+
+<script>
+"use strict";
+
+/* Same trick the check harness uses: the page keeps its state in top level
+   const/let, which never lands on window, and eval inside the frame's own
+   realm sees all of it. So index.html carries no bench hooks. */
+
+const PLAN = [
+  { key:'idle',       label:'idle, nothing moves' },
+  { key:'full',       label:'drag, full chain (Simplify while moving off)' },
+  { key:'shipped',    label:'drag, as shipped', base:true },
+  { key:'transform',  label:' + moved by transform, not left/top' },
+  { key:'noblend',    label:' + no ::before / ::after blend layers' },
+  { key:'willchange', label:' + will-change: transform' },
+  { key:'smallpad',   label:' + refraction 20, so a third of the filter pad' },
+  { key:'noleg',      label:' + no legibility curve' },
+  { key:'nofilter',   label:'no svg filter at all — the ceiling' },
+];
+
+const out = document.getElementById('out');
+const sum = document.getElementById('sum');
+const rows = new Map();
+
+PLAN.forEach(p=>{
+  const tr = document.createElement('tr');
+  tr.className = 'pending' + (p.base ? ' base' : '');
+  tr.innerHTML = '<td></td><td class="n">…</td><td>fps</td><td class="x"></td><td></td>';
+  tr.children[0].textContent = p.label;
+  out.appendChild(tr);
+  rows.set(p.key, tr);
+});
+
+/* One runner, installed in the frame, so every configuration is measured by
+   exactly the same loop and the numbers are comparable. */
+const RUNNER = `
+window.__bench = function(name, ms){
+  const el = document.querySelector('.clock');
+  const g  = sheets.find(s=> s.el === el);
+  const undo = [];
+
+  if(name === 'full'){ cfg.simplifyMoving = false; undo.push(()=> cfg.simplifyMoving = true); }
+  if(name === 'noblend'){
+    const s = document.createElement('style');
+    s.textContent = '.lg::before,.lg::after{display:none!important}';
+    document.head.appendChild(s); undo.push(()=> s.remove());
+  }
+  if(name === 'willchange'){ el.style.willChange = 'transform'; undo.push(()=> el.style.willChange = ''); }
+  if(name === 'smallpad'){ cfg.refraction = 20; run(2); undo.push(()=>{ cfg.refraction = 62; run(2); }); }
+  if(name === 'noleg'){ cfg.legibility = 0; run(2); undo.push(()=>{ cfg.legibility = 0.30; run(2); }); }
+  if(name === 'nofilter'){
+    el.style.backdropFilter = 'blur(1.5px) saturate(170%)';
+    el.style.webkitBackdropFilter = el.style.backdropFilter;
+    undo.push(()=> run(2));
+  }
+
+  const box = el.getBoundingClientRect();
+  el.style.position = 'fixed'; el.style.right = 'auto'; el.style.bottom = 'auto';
+  el.style.left = box.left + 'px'; el.style.top = box.top + 'px';
+  if(name !== 'idle') g.setMoving(true);
+
+  const byTransform = name === 'transform';
+  const move = d =>{
+    if(name === 'idle') return;
+    const dx = Math.sin(d/170)*200, dy = Math.cos(d/230)*80;
+    if(byTransform){
+      el.style.setProperty('--bx', dx + 'px');
+      el.style.setProperty('--by', dy + 'px');
+    } else {
+      el.style.left = (box.left + dx) + 'px';
+      el.style.top  = (box.top  + dy) + 'px';
+    }
+  };
+
+  return new Promise(res=>{
+    let n = 0; const t0 = performance.now();
+    /* a parked rAF would hang this for good, so give up and say so */
+    const bail = setTimeout(()=> finish(-1), ms + 2500);
+    function finish(v){
+      clearTimeout(bail);
+      g.setMoving(false);
+      el.style.setProperty('--bx','0px'); el.style.setProperty('--by','0px');
+      undo.forEach(f=> f());
+      res(v);
+    }
+    (function f(){
+      const d = performance.now() - t0;
+      move(d); n++;
+      if(d < ms) requestAnimationFrame(f);
+      else finish(Math.round(n/(d/1000)));
+    })();
+  });
+};`;
+
+function paint(){
+  const done = PLAN.filter(p=> typeof p.fps === 'number' && p.fps > 0);
+  const top = done.length ? Math.max(...done.map(p=> p.fps)) : 1;
+  const base = PLAN.find(p=> p.base);
+
+  PLAN.forEach(p=>{
+    const tr = rows.get(p.key);
+    if(typeof p.fps !== 'number') return;
+    tr.className = (p.base ? 'base' : '') + (p.fps === top && p.fps > 0 ? ' best' : '');
+    if(p.fps < 0){
+      tr.children[1].textContent = '—';
+      tr.children[1].className = 'n dead';
+      tr.children[2].textContent = 'not composited';
+      return;
+    }
+    tr.children[1].textContent = p.fps;
+    tr.children[3].textContent = base && typeof base.fps === 'number' && base.fps > 0 && !p.base
+      ? (p.fps/base.fps).toFixed(2).replace(/\.00$/, '') + '×' : '';
+    tr.children[4].innerHTML = '<i class="bar" style="width:' +
+      Math.max(2, Math.round(p.fps/top*230)) + 'px"></i>';
+  });
+}
+
+(async function go(){
+  const frame = document.getElementById('stage');
+  await new Promise(r=> frame.addEventListener('load', r, { once:true }));
+  const win = frame.contentWindow;
+  await new Promise(r=> setTimeout(r, 1400));   // let the first bake land
+
+  try{ win.eval(RUNNER); }
+  catch(err){
+    sum.innerHTML = '<span class="dead">could not reach the page: ' + err.message + '</span>';
+    return;
+  }
+
+  for(const p of PLAN){
+    sum.textContent = 'measuring ' + p.label.trim() + '…';
+    p.fps = await win.__bench(p.key, 1300);
+    paint();
+    await new Promise(r=> setTimeout(r, 160));
+  }
+
+  const parked = PLAN.some(p=> p.fps < 0);
+  const base = PLAN.find(p=> p.base).fps;
+  const top  = PLAN[PLAN.length-1].fps;
+  sum.innerHTML = parked
+    ? '<span class="dead">requestAnimationFrame is parked in this tab.</span> ' +
+      'Bring the window to the front, uncover it, and reload.'
+    : 'as shipped <b>' + base + ' fps</b> · ceiling without the svg filter <b>' +
+      top + ' fps</b> · headroom left <b>' + (top/base).toFixed(1) + '×</b>';
+  sum.style.color = parked ? '' : '#4ad07a';
+  document.title = parked ? 'bench — not composited' : 'bench — ' + base + ' fps';
+})();
+</script>
+</body>
+</html>
