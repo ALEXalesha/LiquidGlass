@@ -449,7 +449,9 @@ const defs = document.getElementById('lg-defs');
 const root = document.documentElement;
 
 const SQUIRCLE_OK = CSS.supports('corner-shape', 'squircle');
-const SVG_BACKDROP = CSS.supports('backdrop-filter', 'url(#a)')
+/* let, not const, so a harness can walk the fallback path in a browser that
+   does not need it - safari and firefox get it for real */
+let SVG_BACKDROP = CSS.supports('backdrop-filter', 'url(#a)')
   && !/^((?!chrome|chromium|android).)*safari/i.test(navigator.userAgent);
 if(!SVG_BACKDROP) root.classList.add('no-svg-backdrop');
 
@@ -892,8 +894,7 @@ const ONLY_B = '0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0';
 const CALM_FROM = [0.00, 0.20, 0.40, 0.60, 0.80, 1.00];
 const CALM_TO   = [0.10, 0.26, 0.42, 0.56, 0.68, 0.78];
 
-function legibilityTable(){
-  const a = cfg.legibility;
+function legibilityTable(a){
   return CALM_FROM.map((v, i)=> (v + (CALM_TO[i] - v)*a).toFixed(4)).join(' ');
 }
 
@@ -903,7 +904,7 @@ function filterPad(){
   return Math.ceil(cfg.refraction*0.6 + cfg.blur*3 + 8);
 }
 
-function filterMarkup(id, maps, w, h, chroma, rim){
+function filterMarkup(id, maps, w, h, chroma, rim, leg){
   /* negative scale = the rim pulls the surroundings inward,
      the way a thick convex edge really behaves */
   const s = -cfg.refraction;
@@ -926,8 +927,8 @@ function filterMarkup(id, maps, w, h, chroma, rim){
     body += `<feDisplacementMap in="SourceGraphic" in2="map" scale="${s}" ${sel} result="ref"/>`;
   }
 
-  if(cfg.legibility > 0){
-    const f = `type="table" tableValues="${legibilityTable()}"`;
+  if(leg > 0){
+    const f = `type="table" tableValues="${legibilityTable(leg)}"`;
     body += `
       <feComponentTransfer in="${last}" result="calm">
         <feFuncR ${f}/><feFuncG ${f}/><feFuncB ${f}/>
@@ -1031,7 +1032,10 @@ class Glass{
      a menu opens as a flat translucent card and snaps into focus a moment
      later, which is the one thing a menu must not do. */
   provisional(){
-    if(!SVG_BACKDROP) return;
+    /* Not guarded on SVG_BACKDROP. Where the svg path is unavailable this
+       plain blur is not a placeholder, it is the finished look, and skipping
+       it left every element bare until a bake landed - on exactly the
+       browsers that cannot use the bake at all. */
     const bf = `blur(${Math.max(8, cfg.blur*5)}px) saturate(${cfg.saturation}%)`;
     this.el.style.backdropFilter = bf;
     this.el.style.webkitBackdropFilter = bf;
@@ -1049,16 +1053,23 @@ class Glass{
 
     /* While a panel actually moves, the backdrop under it changes every frame
        and this whole chain is re-run every frame - on the cpu, because a chain
-       with feImage and feDisplacementMap does not go to the gpu. Measured on a
-       1536x721 window at dpr 1.25, dragging one panel: 11 fps as built, 24 with
-       the chromatic aberration off, 23 with the rim glow off, 48 with both off,
-       234 with no svg filter at all. So the two decorative stages come off
-       while it moves - three displacement passes become one, and the saturate
-       and its two composites go - and the refraction, the thing you drag the
-       panel to look at, stays. */
+       with feImage and feDisplacementMap does not go to the gpu.
+
+       Measured by bench.html, dragging one panel, against 45 fps as shipped:
+       dropping the chromatic aberration and the rim glow is worth 12%, but
+       dropping the legibility curve is worth 4.2x on its own - a table driven
+       feComponentTransfer is by far the most expensive stage here, which is
+       the opposite of what a first noisy probe suggested. The ceiling with no
+       svg filter at all is 5.3x.
+
+       So all three decorations come off while the panel moves and the
+       refraction stays, which is the thing you drag a panel to look at. The
+       dimming is what keeps text readable over a bright backdrop, and text on
+       something in motion is not being read. */
     const cheap  = this.moving && cfg.simplifyMoving;
     const chroma = cfg.chromatic && cfg.aberration > 0 && !cheap;
     const rim    = cheap ? 0 : cfg.rim;
+    const leg    = cheap ? 0 : cfg.legibility;
 
     /* the two feImage nodes carry data-url pngs. replacing the filter node
        makes chrome decode them again, so only do it when the chain actually
@@ -1072,12 +1083,12 @@ class Glass{
        Geometry alone, not the bake key: moving the light changes the specular
        and the self shadow, which are css layers, and leaves feImage untouched.
        So a light drag never rebuilds a node or re-decodes the png. */
-    const shape = [chroma, cfg.legibility > 0, rim > 0, this.mapsShape].join('|');
+    const shape = [chroma, leg > 0, rim > 0, this.mapsShape].join('|');
 
     if(shape !== this.shapeSig){
       this.shapeSig = shape;
       const fresh = new DOMParser()
-        .parseFromString(`<svg xmlns="${NS}">${filterMarkup(this.id, this.maps, m.w, m.h, chroma, rim)}</svg>`, 'image/svg+xml')
+        .parseFromString(`<svg xmlns="${NS}">${filterMarkup(this.id, this.maps, m.w, m.h, chroma, rim, leg)}</svg>`, 'image/svg+xml')
         .querySelector('filter');
       this.node.replaceWith(fresh);
       this.node = fresh;
@@ -1105,7 +1116,7 @@ class Glass{
       maps[0].setAttribute('scale', s);
     }
 
-    const table = legibilityTable();
+    const table = legibilityTable(cfg.legibility);
     f.querySelectorAll('feComponentTransfer > *').forEach(fn=>{
       fn.setAttribute('tableValues', table);
     });

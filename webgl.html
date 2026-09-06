@@ -634,7 +634,10 @@ window.addEventListener('resize', touch);
 
 function resize(){
   DPR = Math.min(2, window.devicePixelRatio || 1);
-  const w = Math.round(innerWidth*DPR), h = Math.round(innerHeight*DPR);
+  /* a minimised window reports zero, and a zero sized texture makes both
+     framebuffers incomplete - every draw after that is a GL error */
+  const w = Math.max(1, Math.round(innerWidth*DPR));
+  const h = Math.max(1, Math.round(innerHeight*DPR));
   if(w === W && h === H) return;
   W = w; H = h; dirty = true;
   canvas.width = W; canvas.height = H;
@@ -649,6 +652,12 @@ const t0 = performance.now();
 
 function frame(){
   resize();
+
+  /* nothing to show and nothing that could be seen */
+  if(W < 2 || H < 2){
+    requestAnimationFrame(frame);
+    return;
+  }
 
   if(!wallMotion && !dirty){
     meter();
@@ -837,8 +846,12 @@ function tick(){
   document.getElementById('day').textContent =
     DAYS[now.getDay()] + ', ' + MONTHS[now.getMonth()] + ' ' + now.getDate();
 }
-tick();
-setInterval(tick, 10000);
+/* on the minute, not every ten seconds: the old interval could show a minute
+   that had already gone, and woke the page six times to do it */
+(function schedule(){
+  tick();
+  setTimeout(schedule, 60000 - (Date.now() % 60000) + 20);
+})();
 </script>
 </body>
 </html>

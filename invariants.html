@@ -345,6 +345,58 @@ async function bakery(){
     return { n: N, bad: bad.slice(0,3) };
   `);
 
+
+  /* Nothing else here looks at the picture. These two do: one says the light
+     lands where the light is, the other pins the exact bytes so a change to
+     the maths cannot slip through unnoticed. */
+
+  prop('the highlight follows the light around the compass', RND + `
+    var bad = [], N = 60;
+    for(var i=0;i<N;i++){
+      var deg = rf(0, 360);
+      var f = bakeFields(160, 160, 30, 20, rnd() < .5 ? 2 : 4, deg, 1);
+      var sp = f.spec.data, sx = 0, sy = 0, sw = 0;
+      for(var y=0;y<f.ch;y++) for(var x=0;x<f.cw;x++){
+        var a = sp[(y*f.cw + x)*4 + 3];
+        sx += (x - f.cw/2)*a; sy += (y - f.ch/2)*a; sw += a;
+      }
+      if(sw < 1){ bad.push({deg:deg, why:'no highlight at all'}); continue; }
+      var len = Math.hypot(sx, sy) || 1;
+      var rad = deg*Math.PI/180;
+      /* the light direction the bakery itself uses */
+      var dot = (sx/len)*Math.cos(rad) + (sy/len)*(-Math.sin(rad));
+      if(dot < 0.75) bad.push({deg:+deg.toFixed(1), alignment:+dot.toFixed(3)});
+    }
+    return { n: N, bad: bad.slice(0,3),
+             why: 'the bright side tracks the lamp, not the geometry' };
+  `);
+
+  prop('the baked textures still match the committed reference', `
+    function fnv(arrs){
+      var h = 0x811c9dc5 >>> 0;
+      for(var k=0;k<arrs.length;k++){ var a = arrs[k];
+        for(var i=0;i<a.length;i++){ h ^= a[i]; h = Math.imul(h, 0x01000193) >>> 0; } }
+      return h.toString(16);
+    }
+    var REF = [
+      [[120, 64, 16, 14, 2, 128, 1], '773533af'],
+      [[120, 64, 16, 14, 4, 128, 1], 'd302c1ab'],
+      [[64,  64, 32, 18, 2,  40, 1], 'df4631ed'],
+      [[200, 48, 24, 20, 2, 270, 1], 'a35d8f69'],
+      [[90, 150, 20,  6, 4, 200, 2], 'd37e599e'],
+      [[150, 90, 12, 40, 4,  90, 1], 'ae294429']
+    ];
+    var bad = [];
+    for(var i=0;i<REF.length;i++){
+      var a = REF[i][0];
+      var f = bakeFields(a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+      var got = fnv([f.disp.data, f.spec.data, f.shade.data]);
+      if(got !== REF[i][1]) bad.push({ shape: a.join(','), want: REF[i][1], got: got });
+    }
+    return { n: REF.length, bad: bad,
+             why: 'change the maths on purpose and these have to be updated on purpose' };
+  `);
+
   prop('the refraction pushes opposite ways on opposite edges', SHAPES + `
     var bad = [], N = 50;
     for(var i=0;i<N;i++){
@@ -584,6 +636,86 @@ async function machine(ctx){
 
 /* ================================================================== */
 
+
+/* ================================================================== */
+
+async function shader(){
+  group('webgl.html — the other implementation');
+
+  const f = await frame('webgl.html');
+  const win = f.contentWindow;
+  const gv = src => win.eval(src);
+  await wait(700);
+
+  const state = gv(`(function(){
+    var nulls = [];
+    [['wall', progWall], ['glass', progGlass], ['copy', progCopy]].forEach(function(pair){
+      Object.keys(pair[1].u).forEach(function(k){
+        if(pair[1].u[k] === null) nulls.push(pair[0] + '.' + k);
+      });
+    });
+    resize();
+    var fbo = [0,1].map(function(i){
+      gl.bindFramebuffer(gl.FRAMEBUFFER, targets[i].fb);
+      return gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    });
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    while(gl.getError() !== 0){}
+    dirty = true; frame();
+    var errs = [], e;
+    while((e = gl.getError()) !== 0) errs.push(e);
+    readLayout(DPR);
+    var follows = panels.every(function(p){
+      var b = p.el.getBoundingClientRect();
+      return Math.abs(p.rect[0] - b.left*DPR) < 0.02 && Math.abs(p.rect[2] - b.width*DPR) < 0.02;
+    });
+    var clamped = panels.every(function(p){
+      var w = p.rect[2], h = p.rect[3];
+      return w < 2 || h < 2 || p.radius > 0;
+    });
+    return { nulls: nulls, fbo: fbo, errs: errs, follows: follows, clamped: clamped,
+             panels: panels.length,
+             markup: document.querySelectorAll('[data-glass]').length,
+             W: W, H: H };
+  })()`);
+
+  line(state.nulls.length ? 'fail' : 'ok',
+    'every uniform the frame sets actually exists in its program', null,
+    state.nulls.length ? 'missing: ' + state.nulls.join(', ')
+                       : 'a misspelt one would be a silent no-op');
+
+  line(state.fbo[0] && state.fbo[1] ? 'ok' : 'fail',
+    'both ping-pong framebuffers are complete', 2, state.W + 'x' + state.H);
+
+  line(state.errs.length ? 'fail' : 'ok',
+    'a whole frame raises no GL error', 1,
+    state.errs.length ? state.errs.join(', ') : '');
+
+  line(state.panels === state.markup ? 'ok' : 'fail',
+    'every glass element in the markup is a panel', 1,
+    state.panels + ' panels for ' + state.markup + ' elements');
+
+  line(state.follows ? 'ok' : 'fail', 'panel rects follow the dom', null, '');
+  line(state.clamped ? 'ok' : 'fail', 'every drawn panel has a real radius', null, '');
+
+  /* A minimised window reports zero, and a zero sized texture makes the
+     framebuffers incomplete - every draw after that is an error. */
+  const zero = gv(`(function(){
+    var realW = Object.getOwnPropertyDescriptor(window, 'innerWidth');
+    var w = W, h = H;
+    W = 0; H = 0;
+    var before = [], e;
+    while(gl.getError() !== 0){}
+    dirty = true; frame();
+    while((e = gl.getError()) !== 0) before.push(e);
+    W = w; H = h; resize();
+    return before;
+  })()`);
+  line(zero.length ? 'fail' : 'ok',
+    'a zero sized viewport draws nothing instead of erroring', 1,
+    zero.length ? zero.length + ' GL errors' : '');
+}
+
 /* Chrome hands every file:// document its own opaque origin, so a page
    opened from disk cannot reach the frame it is driving. Say that plainly
    instead of letting a cross origin error surface raw. */
@@ -612,6 +744,7 @@ function servedOverHttp(){
     await geometry();
     await bakery();
     await machine({ f, win });
+    await shader();
   }catch(err){
     line('fail', 'harness crashed', null, String(err && err.stack || err));
   }

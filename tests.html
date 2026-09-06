@@ -521,6 +521,53 @@ async function cssPerf(ctx){
     return (r.sameSig && r.sameNode && r.sameHref) || { why: JSON.stringify(r) };
   });
 
+  /* Safari and firefox cannot put an svg filter inside backdrop-filter, so
+     they take a path this browser never walks. It had no coverage at all. */
+  await check('without svg filters every element still reads as glass', ()=>{
+    const r = ev(`(()=>{
+      SVG_BACKDROP = false;
+      document.documentElement.classList.add('no-svg-backdrop');
+      run(2);
+      const bf = sheets.map(g=> g.el.style.backdropFilter || '');
+      const usingFilter = bf.filter(v=> v.indexOf('url(') >= 0).length;
+      const bare = bf.filter(v=> v.indexOf('blur(') < 0).length;
+
+      /* and one that has no textures yet, which is where a menu starts */
+      const el = document.createElement('div');
+      el.className = 'lg';
+      el.style.cssText = 'position:fixed;left:-4000px;top:0;width:140px;height:70px';
+      document.body.appendChild(el);
+      const g = new Glass(el);
+      const fresh = g.el.style.backdropFilter || '';
+      g.destroy(); el.remove();
+
+      const warn = getComputedStyle(document.querySelector('.panel .warn')).display;
+
+      SVG_BACKDROP = true;
+      document.documentElement.classList.remove('no-svg-backdrop');
+      run(3);
+      return { usingFilter, bare, fresh, warn };
+    })()`);
+    if(r.usingFilter) return { why: r.usingFilter + ' elements still point at an svg filter' };
+    if(r.bare) return { why: r.bare + ' elements were left with no backdrop at all' };
+    if(!/blur\(/.test(r.fresh)) return { why: 'an element with no textures yet was left bare: "' + r.fresh + '"' };
+    if(r.warn !== 'block') return { why: 'the browser warning stayed hidden' };
+    return true;
+  });
+
+  await check('the svg path comes back after the fallback is exercised', ()=>
+    new Promise(res=>{
+      const t0 = performance.now();
+      (function poll(){
+        /* the return trip re-bakes anything the fallback let fall out of cache */
+        if(ev('waiting.size') === 0 && ev('backlog.length') === 0 && ev('inFlight') === null)
+          return res(ev("sheets.every(g=> g.metrics().hidden || (g.el.style.backdropFilter||'').indexOf('url(') >= 0)")
+            || { why: 'an element did not return to the filter chain' });
+        if(performance.now() - t0 > 8000) return res({ why: 'the bakes never settled' });
+        setTimeout(poll, 30);
+      })();
+    }));
+
   const alive = await rafAlive(ctx.win);
   if(!alive){
     await check('frame rate with a still wallpaper', ()=> 'skip');
