@@ -150,9 +150,9 @@ async function cssSuite(){
   });
 
   await check('a geometry slider re-bakes', ()=>{
-    const before = ev('sheets[0].geoSig');
+    const before = ev('sheets[0].bakeKey');
     ev("(()=>{const s=document.getElementById('bev');s.value=41;s.dispatchEvent(new Event('input'));run(3);})()");
-    const after = ev('sheets[0].geoSig');
+    const after = ev('sheets[0].bakeKey');
     ev("(()=>{const s=document.getElementById('bev');s.value=20;s.dispatchEvent(new Event('input'));run(3);})()");
     return before !== after || { why: 'signature unchanged: ' + before };
   });
@@ -187,9 +187,9 @@ async function cssSuite(){
     const r = ev(`(()=>{
       const g = sheets.find(s=>s.el.classList.contains('card'));
       if(!g.el.offsetWidth) return {skipped:true};
-      const sig = g.geoSig, n = mapCache.size;
+      const sig = g.bakeKey, n = mapCache.size;
       g.el.style.display='none'; g.sync(true); g.optics();
-      const held = g.geoSig===sig && mapCache.size===n;
+      const held = g.bakeKey===sig && mapCache.size===n;
       g.el.style.display=''; g.sync(true);
       return {held, back: !!g.maps};
     })()`);
@@ -258,9 +258,9 @@ async function cssSuite(){
 
   await check('tilt moves the highlight without re-baking', ()=>{
     const r = ev(`(()=>{
-      const sig = sheets[0].geoSig;
+      const sig = sheets[0].bakeKey;
       dispatchEvent(new DeviceOrientationEvent('deviceorientation', {gamma: 40, beta: 70}));
-      return {x: tilt.x, y: tilt.y, rebaked: sheets[0].geoSig !== sig};
+      return {x: tilt.x, y: tilt.y, rebaked: sheets[0].bakeKey !== sig};
     })()`);
     return (Math.abs(r.x) > 0.5 && !r.rebaked)
       || { why: JSON.stringify(r) };
@@ -406,8 +406,8 @@ async function cssPerf(ctx){
              + drag.ms + ' ms to settle' });
 
   await check('the drag still lands on the value it was released at', ()=>
-    ev('sheets.every(g=> g.metrics().hidden || (g.maps && g.shapeSig.endsWith(g.geoSig)))')
-      || { why: 'an element is showing a shape it no longer wants' });
+    ev('sheets.every(g=> g.metrics().hidden || g.maps === mapCache.get(g.bakeKey))')
+      || { why: 'an element is holding maps that are not the ones for the shape it wants' });
 
   /* If the worker dies the outstanding work falls back to the main thread. It
      must fall back to the shapes still on screen, not to every frame of the
@@ -477,8 +477,8 @@ async function cssPerf(ctx){
      really waiting for then arrive to a chain that never rebuilds - the
      feImage keeps a displacement map from a shape nobody chose. */
   ev(`(()=>{ const g = sheets[0]; mapCache.clear();
-    cfg.bevel = 8;  g.sync(true); window.__k1 = g.geoSig;
-    cfg.bevel = 44; g.sync(true); window.__k2 = g.geoSig; })()`);
+    cfg.bevel = 8;  g.sync(true); window.__k1 = g.bakeKey;
+    cfg.bevel = 44; g.sync(true); window.__k2 = g.bakeKey; })()`);
 
   const settled = await new Promise(res=>{
     const t0 = performance.now();
@@ -501,6 +501,24 @@ async function cssPerf(ctx){
     if(!r.differ) return { skip: true, why: 'both shapes baked the same map here' };
     return (r.wanted && !r.old)
       || { why: 'the chain kept the displacement map of the shape it abandoned' };
+  });
+
+  /* Only the specular and the self shadow depend on the light, and both are
+     css layers. Rebuilding the chain would make chrome decode the displacement
+     png again for nothing, on every step of the drag. */
+  await check('moving the light never rebuilds a filter chain', ()=>{
+    const r = ev(`(()=>{
+      const g = sheets[0];
+      const before = { sig: g.shapeSig, node: document.getElementById(g.id),
+                       href: document.getElementById(g.id).querySelector('feImage').getAttribute('href') };
+      const s = document.getElementById('light');
+      s.value = (cfg.light + 97) % 360; s.dispatchEvent(new Event('input'));
+      run(3);
+      const node = document.getElementById(g.id);
+      return { sameSig: g.shapeSig === before.sig, sameNode: node === before.node,
+               sameHref: node.querySelector('feImage').getAttribute('href') === before.href };
+    })()`);
+    return (r.sameSig && r.sameNode && r.sameHref) || { why: JSON.stringify(r) };
   });
 
   const alive = await rafAlive(ctx.win);

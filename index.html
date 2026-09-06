@@ -662,10 +662,11 @@ const WORKER_MAIN = [
   '      cv.getContext("2d").putImageData(img, 0, 0);',
   '      return cv.convertToBlob({ type: "image/png" });',
   '    };',
-  '    Promise.all([png(f.disp), png(f.spec), png(f.shade)]).then(function(b){',
+  '    var want = [q.skipDisp ? null : png(f.disp), png(f.spec), png(f.shade)];',
+  '    Promise.all(want).then(function(b){',
   '      var r = new FileReaderSync();',
   '      self.postMessage({ key: q.key, maps: {',
-  '        disp:  r.readAsDataURL(b[0]),',
+  '        disp:  b[0] ? r.readAsDataURL(b[0]) : null,',
   '        spec:  r.readAsDataURL(b[1]),',
   '        shade: r.readAsDataURL(b[2])',
   '      }});',
@@ -675,13 +676,18 @@ const WORKER_MAIN = [
 ].join('\n');
 
 const DPR = Math.min(2, window.devicePixelRatio || 1);
-const mapCache = new Map();
-const waiting = new Map();
-const pendingJobs = new Map();
+const mapCache = new Map();      // bakeKey  -> { disp, spec, shade }
+const dispCache = new Map();     // shapeKey -> the displacement png
+const waiting = new Map();       // bakeKey  -> the elements expecting it
+const pendingJobs = new Map();   // bakeKey  -> what to bake
 
-/* keys asked for but not yet handed to the worker, oldest first */
+/* Elements waiting for a texture, oldest first, each listed once.
+   Keyed by element and not by shape, which is what makes the queue safe: an
+   element only ever wants one shape at a time, so the queue cannot grow past
+   the number of panels on screen however long a drag runs, and taking them
+   in turn means no panel is starved while its neighbours are served. */
 const backlog = [];
-let inFlight = null, flightTimer = 0;
+let inFlight = null, flightTimer = 0, inFlightDisp = null;
 
 /* far past any real bake - eight panels together cost the worker 240 ms at
    dpr 2. A job still out after this means the worker is gone, not slow. */
@@ -699,9 +705,14 @@ try{
   }
 }catch(err){ baker = null; }
 
+/* the light angle is the last field of a bake key, and the displacement map
+   is the one texture that does not depend on it */
+function shapeOf(key){ return key.slice(0, key.lastIndexOf(':')); }
+
 function cacheMaps(key, maps){
-  if(mapCache.size > 60) mapCache.clear();
+  if(mapCache.size > 60){ mapCache.clear(); dispCache.clear(); }
   mapCache.set(key, maps);
+  dispCache.set(shapeOf(key), maps.disp);
 }
 
 function encodeHere(fields){
@@ -721,16 +732,30 @@ function bakeHere(key, job){
   return maps;
 }
 
-/* geoSig is the shape an element currently wants, so a key no live element
+/* bakeKey is the shape an element wants right now, so a key no live element
    still names is a shape the slider has already scrolled past */
 function stillWanted(key){
   const queue = waiting.get(key);
-  return !!queue && queue.some(g=> !g.dead && g.geoSig === key);
+  return !!queue && queue.some(g=> !g.dead && g.bakeKey === key);
 }
 
 function forget(key){
   waiting.delete(key);
   pendingJobs.delete(key);
+}
+
+/* Runs on every request and not only when the worker is free: a burst that
+   never yields would otherwise leave one abandoned shape behind per step. */
+function prune(){
+  waiting.forEach((queue, key)=>{
+    if(key !== inFlight && !stillWanted(key)) forget(key);
+  });
+}
+
+function enqueue(glass){
+  if(glass.queued) return;
+  glass.queued = true;
+  backlog.push(glass);
 }
 
 /* An element that has already asked for a different shape gets nothing.
@@ -739,8 +764,8 @@ function forget(key){
    chain that sees no change and never rebuilds - leaving feImage holding a
    displacement map from a shape nobody chose. Its own reply is still coming. */
 function dress(glass, key, maps){
-  if(glass.dead || glass.geoSig !== key) return;
-  glass.applyMaps(maps);
+  if(glass.dead || glass.bakeKey !== key) return;
+  glass.applyMaps(maps, key);
   glass.optics();
 }
 
@@ -752,12 +777,23 @@ function dress(glass, key, maps){
    So keep exactly one job in the worker and drop the stale head of the
    backlog every time it comes free. */
 function pumpBaker(){
+  prune();
   if(inFlight || !baker) return;
   while(backlog.length){
-    const key = backlog.shift();
-    if(!stillWanted(key)){ forget(key); continue; }
+    const g = backlog.shift();
+    g.queued = false;
+    if(g.dead) continue;
+
+    /* whatever it wants at this moment, never what it wanted when it queued */
+    const key = g.bakeKey;
+    const hit = mapCache.get(key);
+    if(hit){ if(g.maps !== hit) dress(g, key, hit); continue; }
     const job = pendingJobs.get(key);
-    if(!job){ forget(key); continue; }
+    if(!job) continue;
+
+    /* held here rather than looked up on the way back, so a cache trim
+       between the question and the answer cannot lose the map we skipped */
+    inFlightDisp = dispCache.get(job.shapeKey) || null;
     inFlight = key;
     clearTimeout(flightTimer);
     flightTimer = setTimeout(()=>{
@@ -766,8 +802,8 @@ function pumpBaker(){
       if(inFlight === key){ baker = null; drainWaiting(); }
     }, BAKE_TIMEOUT_MS);
     baker.postMessage({
-      key: key, w: job.w, h: job.h, radius: job.radius,
-      bevel: job.bevel, n: job.n, light: job.light, dpr: job.dpr
+      key: key, w: job.w, h: job.h, radius: job.radius, bevel: job.bevel,
+      n: job.n, light: job.light, dpr: job.dpr, skipDisp: !!inFlightDisp
     });
     return;
   }
@@ -775,9 +811,13 @@ function pumpBaker(){
 
 function onBaked(e){
   const key = e.data.key, maps = e.data.maps;
-  if(inFlight === key){ inFlight = null; clearTimeout(flightTimer); }
+  const carried = inFlight === key ? inFlightDisp : null;
+  if(inFlight === key){ inFlight = null; inFlightDisp = null; clearTimeout(flightTimer); }
 
-  if(!maps){
+  /* the worker skips the displacement map when the page already holds it */
+  if(maps && !maps.disp) maps.disp = carried || dispCache.get(shapeOf(key)) || null;
+
+  if(!maps || !maps.disp){
     /* this one shape did not survive the worker. bake it here so the element
        is not left bare, and keep the rest of the queue moving */
     const job = pendingJobs.get(key), wanted = stillWanted(key);
@@ -804,8 +844,10 @@ function onBaked(e){
    every element without its maps - but only the shapes something on screen
    is still waiting for, or the recovery is itself a freeze */
 function drainWaiting(){
+  backlog.forEach(g=>{ g.queued = false; });
   backlog.length = 0;
   inFlight = null;
+  inFlightDisp = null;
   clearTimeout(flightTimer);
   const live = [];
   waiting.forEach((queue, key)=>{
@@ -823,15 +865,16 @@ function drainWaiting(){
 /* true when the caller can carry straight on */
 function requestMaps(glass, key, job){
   const hit = mapCache.get(key);
-  if(hit){ glass.applyMaps(hit); return true; }
+  if(hit){ glass.applyMaps(hit, key); return true; }
 
-  if(!baker){ glass.applyMaps(bakeHere(key, job)); return true; }
+  if(!baker){ glass.applyMaps(bakeHere(key, job), key); return true; }
 
-  const queue = waiting.get(key);
-  if(queue){ if(queue.indexOf(glass) < 0) queue.push(glass); return false; }
-  waiting.set(key, [glass]);
   pendingJobs.set(key, job);
-  backlog.push(key);
+  const queue = waiting.get(key);
+  if(queue){ if(queue.indexOf(glass) < 0) queue.push(glass); }
+  else waiting.set(key, [glass]);
+
+  enqueue(glass);
   pumpBaker();
   return false;
 }
@@ -922,9 +965,12 @@ class Glass{
     this.node = document.createElementNS(NS, 'filter');
     this.node.id = this.id;
     defs.appendChild(this.node);
-    this.geoSig = '';
-    this.shapeSig = '';
+    this.shapeKey = '';      // geometry alone, what it wants
+    this.mapsShape = '';     // geometry alone, what its textures are for
+    this.bakeKey = '';       // geometry and the light angle
+    this.shapeSig = '';      // what the filter chain is currently built from
     this.moving = false;
+    this.queued = false;
     this.spring = { sx:1, sy:1, vx:0, vy:0, tx:1, ty:1 };
     this.bindPointer();
     this.sync(true);
@@ -945,8 +991,11 @@ class Glass{
     return { w, h, r, n };
   }
 
-  applyMaps(maps){
+  applyMaps(maps, key){
     this.maps = maps;
+    /* what the chain would be built from, which is not always what the
+       element currently wants - the bake for that may still be in the air */
+    this.mapsShape = shapeOf(key);
     this.el.style.setProperty('--spec-map',  `url("${maps.spec}")`);
     this.el.style.setProperty('--shade-map', `url("${maps.shade}")`);
   }
@@ -955,19 +1004,37 @@ class Glass{
     const m = this.metrics();
     if(m.hidden) return;
     const bevel = Math.min(cfg.bevel, Math.min(m.w, m.h)/2.2);
-    const sig = [m.w, m.h, m.r.toFixed(1), bevel.toFixed(1), m.n, cfg.light, DPR].join(':');
+    /* the light angle goes last, because it is the one field the displacement
+       map ignores - which lets the map outlive every move of the light */
+    const shapeKey = [m.w, m.h, m.r.toFixed(1), bevel.toFixed(1), m.n, DPR].join(':');
+    const bakeKey  = shapeKey + ':' + cfg.light;
 
     this.relight();
 
-    if(force || sig !== this.geoSig){
-      this.geoSig = sig;
+    if(force || bakeKey !== this.bakeKey){
+      this.shapeKey = shapeKey;
+      this.bakeKey = bakeKey;
       this.el.style.setProperty('--gsize', Math.round(Math.max(m.w, m.h)*0.7) + 'px');
       /* the worker answers later; the element keeps the maps it already has
          until then, and optics runs again when they land */
-      if(!requestMaps(this, sig, { w:m.w, h:m.h, radius:m.r, bevel:bevel,
-                                   n:m.n, light:cfg.light, dpr:DPR })) return;
+      if(!requestMaps(this, bakeKey, { w:m.w, h:m.h, radius:m.r, bevel:bevel,
+                                       n:m.n, light:cfg.light, dpr:DPR,
+                                       shapeKey:shapeKey })){
+        if(!this.maps) this.provisional();
+        return;
+      }
     }
     this.optics(m);
+  }
+
+  /* An element with no textures yet still has to read as glass. Without this
+     a menu opens as a flat translucent card and snaps into focus a moment
+     later, which is the one thing a menu must not do. */
+  provisional(){
+    if(!SVG_BACKDROP) return;
+    const bf = `blur(${Math.max(8, cfg.blur*5)}px) saturate(${cfg.saturation}%)`;
+    this.el.style.backdropFilter = bf;
+    this.el.style.webkitBackdropFilter = bf;
   }
 
   optics(m){
@@ -996,7 +1063,16 @@ class Glass{
     /* the two feImage nodes carry data-url pngs. replacing the filter node
        makes chrome decode them again, so only do it when the chain actually
        changes shape or the maps were re-baked */
-    const shape = [chroma, cfg.legibility > 0, rim > 0, this.geoSig].join('|');
+    /* mapsShape, not shapeKey: this signature says what the chain is built
+       from, never what the element wishes it were. Claiming a shape whose
+       textures have not arrived yet stamps the signature, and the real ones
+       then land on a chain that sees no change and never rebuilds - leaving
+       feImage on a displacement map the element is not even holding.
+
+       Geometry alone, not the bake key: moving the light changes the specular
+       and the self shadow, which are css layers, and leaves feImage untouched.
+       So a light drag never rebuilds a node or re-decodes the png. */
+    const shape = [chroma, cfg.legibility > 0, rim > 0, this.mapsShape].join('|');
 
     if(shape !== this.shapeSig){
       this.shapeSig = shape;
@@ -1615,6 +1691,9 @@ document.querySelectorAll('.dock .app').forEach((app, i)=>{
 
 document.addEventListener('contextmenu', e=>{
   if(e.target.closest('.menu')) return;
+  /* a fake desktop menu on top of a real slider is just in the way, and it
+     also hides the browser's own menu where it is actually wanted */
+  if(e.target.closest('.panel')) return;
   e.preventDefault();
   spawnMenu(deskMenu, { side:'cursor', x:e.clientX, y:e.clientY, cx:e.clientX, cy:e.clientY, w:16, h:16 });
 });
@@ -1717,10 +1796,22 @@ function tick(){
 
 /* ---------- resize ---------- */
 
+/* A panel dragged to the far edge of a large window is outside a small one,
+   where no pointer can ever reach it again. Bring the strays back in. */
+function reseat(){
+  sheets.forEach(g=>{
+    const el = g.el;
+    if(el.style.position !== 'fixed' || !el.style.left) return;
+    const w = el.offsetWidth, h = el.offsetHeight;
+    el.style.left = clamp(parseFloat(el.style.left) || 0, 8, Math.max(8, innerWidth  - w - 8)) + 'px';
+    el.style.top  = clamp(parseFloat(el.style.top)  || 0, 8, Math.max(8, innerHeight - h - 8)) + 'px';
+  });
+}
+
 let resizeTimer;
 window.addEventListener('resize', ()=>{
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(()=> refresh(3), 140);
+  resizeTimer = setTimeout(()=>{ reseat(); refresh(3); }, 140);
 });
 </script>
 </body>

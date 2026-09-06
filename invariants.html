@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Liquid Glass — invariants</title>
+<style>
+  body{ font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+        background:#0d0d13; color:#dfe3ea; margin:0; padding:26px 30px 60px; }
+  h1{ font-size:17px; margin:0 0 4px; }
+  .sub{ opacity:.55; margin-bottom:20px; font-size:12px; max-width:80ch; line-height:1.7; }
+  h2{ font-size:13px; margin:24px 0 8px; color:#8ab4ff; font-weight:700; }
+  .row{ display:flex; gap:10px; padding:2px 0; align-items:baseline; }
+  .tag{ flex:0 0 46px; font-weight:700; }
+  .ok   .tag{ color:#4ad07a; }
+  .fail .tag{ color:#ff5f6d; }
+  .skip .tag{ color:#c8a24a; }
+  .n{ flex:0 0 74px; opacity:.4; text-align:right; font-variant-numeric:tabular-nums; }
+  .why{ opacity:.6; margin-left:auto; text-align:right; max-width:52%; }
+  .fail .why{ opacity:.95; color:#ffb3b8; }
+  #sum{ position:sticky; top:0; background:#0d0d13; padding:12px 0 14px;
+        border-bottom:1px solid #23232e; margin-bottom:6px; font-size:14px; }
+  #sum b{ font-size:20px; }
+  iframe{ position:absolute; left:-6000px; top:0; width:1440px; height:880px; border:0; }
+  .note{ opacity:.5; font-size:11.5px; margin-top:22px; max-width:80ch; line-height:1.75; }
+  code{ color:#8ab4ff; }
+</style>
+</head>
+<body>
+
+<h1>Liquid Glass — invariants</h1>
+<div class="sub">
+  Not examples, properties. Every line below is a statement that has to hold for
+  <i>every</i> input, checked against thousands of random ones. The pixel maths is
+  pure, so it can be hammered directly; the bake queue and the element lifecycle
+  are state machines, so they get random action sequences and are checked once
+  they settle. A failure prints the case that broke it, and the seed reproduces
+  the whole run.
+</div>
+
+<div id="sum">running…</div>
+<div id="out"></div>
+
+<div class="note">
+  Everything here reads the page through <code>eval</code> in its own realm, the
+  way the check harness does, so <code>index.html</code> carries no hooks for it.
+  Nothing here needs the tab to be composited — these are statements about values,
+  not about frames. For frames see <code>bench.html</code>, for behaviour
+  <code>tests.html</code>.
+</div>
+
+<script>
+"use strict";
+
+const SEED = Number(new URLSearchParams(location.search).get('seed')) || 20260906;
+
+const out = document.getElementById('out');
+const sum = document.getElementById('sum');
+const results = { pass:0, fail:0, skip:0, cases:0 };
+
+function line(state, name, cases, why){
+  results[state === 'ok' ? 'pass' : state === 'fail' ? 'fail' : 'skip']++;
+  if(typeof cases === 'number') results.cases += cases;
+  const el = document.createElement('div');
+  el.className = 'row ' + state;
+  el.innerHTML = '<span class="tag"></span><span class="n"></span><span></span><span class="why"></span>';
+  el.children[0].textContent = state === 'ok' ? 'HOLDS' : state === 'fail' ? 'BROKE' : 'SKIP';
+  el.children[1].textContent = typeof cases === 'number' ? cases.toLocaleString() + '×' : '';
+  el.children[2].textContent = name;
+  el.children[3].textContent = why || '';
+  out.appendChild(el);
+}
+
+function group(title){
+  const h = document.createElement('h2');
+  h.textContent = title;
+  out.appendChild(h);
+}
+
+const wait = ms => new Promise(r=> setTimeout(r, ms));
+
+/* setTimeout in a tab that is not being composited is held to about a second,
+   which turns any poll loop into a crawl. A MessageChannel hop is a macrotask
+   the throttle does not touch, so waiting on the worker stays honest here. */
+function tick(){
+  return new Promise(r=>{ const c = new MessageChannel();
+    c.port1.onmessage = ()=> r(); c.port2.postMessage(0); });
+}
+async function flush(n){ for(let i=0;i<(n||8);i++) await tick(); }
+
+function frame(url){
+  return new Promise(resolve=>{
+    const f = document.createElement('iframe');
+    f.src = url + '?inv=' + Date.now();
+    f.addEventListener('load', ()=> resolve(f), { once:true });
+    document.body.appendChild(f);
+  });
+}
+
+/* ------------------------------------------------------------------
+   A property is a loop that runs inside the page's own realm and hands
+   back only what broke. Keeping the loop over there means a thousand
+   cases cost one call instead of a thousand.
+   ------------------------------------------------------------------ */
+
+let ev;
+
+function prop(name, body){
+  let r;
+  try{ r = ev('(function(){' + body + '})()'); }
+  catch(err){ return line('fail', name, null, String(err && err.message || err)); }
+  if(r && r.skip) return line('skip', name, r.n, r.why);
+  if(!r || !r.bad || !r.bad.length) return line('ok', name, r ? r.n : null, r && r.why);
+  line('fail', name, r.n, r.bad.length + ' of ' + r.n + ' broke, first: ' + JSON.stringify(r.bad[0]));
+}
+
+/* seeded so a failure can be replayed with ?seed=... */
+const RND = `
+  var __s = ${SEED} >>> 0;
+  function rnd(){ __s ^= __s << 13; __s >>>= 0; __s ^= __s >> 17; __s ^= __s << 5; __s >>>= 0;
+                  return __s / 4294967296; }
+  function rf(a, b){ return a + rnd()*(b - a); }
+  function ri(a, b){ return Math.floor(rf(a, b + 1)); }
+`;
+
+/* ================================================================== */
+
+async function geometry(){
+  group('geometry — pure functions, hammered directly');
+
+  prop('corner() is symmetric in its two arms', RND + `
+    var bad = [], N = 4000;
+    for(var i=0;i<N;i++){
+      var a = rf(-40, 400), b = rf(-40, 400), n = rnd() < .5 ? 2 : 4;
+      var x = corner(a, b, n), y = corner(b, a, n);
+      if(Math.abs(x - y) > 1e-9) bad.push({a:a, b:b, n:n, ab:x, ba:y});
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+
+  prop('corner() sits between max(a,b) and hypot(a,b) for n >= 2', RND + `
+    var bad = [], N = 4000;
+    for(var i=0;i<N;i++){
+      var a = rf(0, 400), b = rf(0, 400), n = rnd() < .5 ? 2 : 4;
+      var v = corner(a, b, n), lo = Math.max(a, b), hi = Math.hypot(a, b);
+      if(v < lo - 1e-7 || v > hi + 1e-7) bad.push({a:a, b:b, n:n, got:v, lo:lo, hi:hi});
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+
+  prop('a squircle corner is never sharper than a round one', RND + `
+    var bad = [], N = 3000;
+    for(var i=0;i<N;i++){
+      var a = rf(0.5, 300), b = rf(0.5, 300);
+      var round = corner(a, b, 2), sq = corner(a, b, 4);
+      if(sq > round + 1e-7) bad.push({a:a, b:b, round:round, squircle:sq});
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+
+  prop('sdf() is negative inside, zero on the edge, positive outside', RND + `
+    var bad = [], N = 3000;
+    for(var i=0;i<N;i++){
+      var hw = rf(12, 400), hh = rf(12, 400);
+      var r = rf(0, Math.min(hw, hh)), n = rnd() < .5 ? 2 : 4;
+      var mid  = sdf(0, 0, hw, hh, r, n);
+      var edge = sdf(hw, 0, hw, hh, r, n);
+      var far  = sdf(hw*3 + 50, hh*3 + 50, hw, hh, r, n);
+      if(!(mid < 0 && Math.abs(edge) < 1e-6 && far > 0))
+        bad.push({hw:hw, hh:hh, r:r, n:n, mid:mid, edge:edge, far:far});
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+
+  prop('sdf() never decreases as you walk out from the centre', RND + `
+    var bad = [], N = 1200;
+    for(var i=0;i<N;i++){
+      var hw = rf(12, 300), hh = rf(12, 300);
+      var r = rf(0, Math.min(hw, hh)), n = rnd() < .5 ? 2 : 4;
+      var a = rf(0, Math.PI*2), ux = Math.cos(a), uy = Math.sin(a);
+      var prev = -Infinity, broke = null;
+      for(var t=0; t<=1.6; t+=0.04){
+        var d = sdf(ux*t*hw*1.2, uy*t*hh*1.2, hw, hh, r, n);
+        if(d < prev - 1e-6){ broke = {t:t, d:d, prev:prev}; break; }
+        prev = d;
+      }
+      if(broke) bad.push({hw:hw, hh:hh, r:r, n:n, at:broke});
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+
+  prop('sdf() is symmetric in both axes', RND + `
+    var bad = [], N = 3000;
+    for(var i=0;i<N;i++){
+      var hw = rf(12, 300), hh = rf(12, 300);
+      var r = rf(0, Math.min(hw, hh)), n = rnd() < .5 ? 2 : 4;
+      var x = rf(-hw*1.4, hw*1.4), y = rf(-hh*1.4, hh*1.4);
+      var a = sdf(x, y, hw, hh, r, n), b = sdf(-x, y, hw, hh, r, n), c = sdf(x, -y, hw, hh, r, n);
+      if(Math.abs(a-b) > 1e-9 || Math.abs(a-c) > 1e-9) bad.push({x:x, y:y, hw:hw, hh:hh, r:r, n:n, a:a, b:b, c:c});
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+
+  prop('the hand rolled powers really are x^46 and x^26', RND + `
+    var bad = [], N = 4000;
+    for(var i=0;i<N;i++){
+      var x = rnd();
+      var a = pow46(x), b = Math.pow(x, 46);
+      var c = pow26(x), d = Math.pow(x, 26);
+      if(Math.abs(a-b) > 1e-12 + Math.abs(b)*1e-9 || Math.abs(c-d) > 1e-12 + Math.abs(d)*1e-9)
+        bad.push({x:x, pow46:a, want46:b, pow26:c, want26:d});
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+
+  prop('clamp() and byte() never let anything out of range', RND + `
+    var bad = [], N = 4000;
+    for(var i=0;i<N;i++){
+      var v = rnd() < .1 ? [NaN, Infinity, -Infinity, 0, -0][ri(0,4)] : rf(-1e4, 1e4);
+      var a = rf(-100, 100), b = a + rf(0, 200);
+      var c = clamp(v, a, b), by = byte(v);
+      if(!Number.isNaN(v) && (c < a || c > b)) bad.push({v:v, a:a, b:b, clamp:c});
+      if(!(by >= 0 && by <= 255 && Number.isInteger(by))) bad.push({v:v, byte:by});
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+}
+
+/* ================================================================== */
+
+async function bakery(){
+  group('bakery — every texture that comes out of bakeFields');
+
+  const SHAPES = RND + `
+    function shape(){
+      var w = ri(8, 190), h = ri(8, 190);
+      var r = rf(0, Math.min(w, h)/2);
+      var bevel = rf(2, Math.min(w, h)/2.2);
+      return { w:w, h:h, r:r, bevel:bevel, n: rnd() < .5 ? 2 : 4,
+               light: rf(0, 359), dpr: [1, 1.25, 1.5, 2][ri(0,3)] };
+    }
+  `;
+
+  prop('the texture is the size the caller will draw it at, and never over budget', SHAPES + `
+    var bad = [], N = 120;
+    for(var i=0;i<N;i++){
+      var s = shape(), f = bakeFields(s.w, s.h, s.r, s.bevel, s.n, s.light, s.dpr);
+      var px = f.cw * f.ch;
+      var ok = f.cw >= 4 && f.ch >= 4 && px <= 9e5 * 1.02
+        && f.disp.data.length === px*4 && f.spec.data.length === px*4 && f.shade.data.length === px*4
+        && f.disp.width === f.cw && f.disp.height === f.ch;
+      if(!ok) bad.push({ s:s, cw:f.cw, ch:f.ch, px:px });
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+
+  prop('channels stay in their lanes: disp opaque, spec white, shade black', SHAPES + `
+    var bad = [], N = 90;
+    for(var i=0;i<N;i++){
+      var s = shape(), f = bakeFields(s.w, s.h, s.r, s.bevel, s.n, s.light, s.dpr);
+      var d = f.disp.data, sp = f.spec.data, sh = f.shade.data, broke = null;
+      for(var k=0;k<d.length && !broke;k+=4){
+        if(d[k+3] !== 255) broke = {at:k/4, why:'disp alpha ' + d[k+3]};
+        else if(sp[k] !== 255 || sp[k+1] !== 255 || sp[k+2] !== 255) broke = {at:k/4, why:'spec not white'};
+        else if(sh[k] !== 0 || sh[k+1] !== 0 || sh[k+2] !== 0) broke = {at:k/4, why:'shade not black'};
+      }
+      if(broke) bad.push({ s:s, broke:broke });
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+
+  prop('the middle of a panel is flat glass: no displacement, no rim', SHAPES + `
+    var bad = [], N = 90;
+    for(var i=0;i<N;i++){
+      var s = shape();
+      /* only meaningful where a flat middle exists at all */
+      if(Math.min(s.w, s.h) * s.dpr < s.bevel * 4 + 8){ i--; continue; }
+      var f = bakeFields(s.w, s.h, s.r, s.bevel, s.n, s.light, s.dpr);
+      var k = ((f.ch >> 1) * f.cw + (f.cw >> 1)) * 4;
+      var d = f.disp.data;
+      if(d[k] !== 128 || d[k+1] !== 128 || d[k+2] !== 0)
+        bad.push({ s:s, centre:[d[k], d[k+1], d[k+2]] });
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+
+  prop('nothing is painted outside the shape', SHAPES + `
+    var bad = [], N = 90;
+    for(var i=0;i<N;i++){
+      var s = shape();
+      if(s.r < 6) { i--; continue; }        /* need a corner to be outside of */
+      var f = bakeFields(s.w, s.h, s.r, s.bevel, s.n, s.light, s.dpr);
+      var k = 0;                             /* top left pixel, outside a rounded corner */
+      var sp = f.spec.data, sh = f.shade.data, d = f.disp.data;
+      if(sp[k+3] > 2 || sh[k+3] > 2 || d[k+2] > 2)
+        bad.push({ s:s, spec:sp[k+3], shade:sh[k+3], rim:d[k+2] });
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+
+  prop('baking the same shape twice gives the same bytes', SHAPES + `
+    var bad = [], N = 60;
+    for(var i=0;i<N;i++){
+      var s = shape();
+      var a = bakeFields(s.w, s.h, s.r, s.bevel, s.n, s.light, s.dpr);
+      var b = bakeFields(s.w, s.h, s.r, s.bevel, s.n, s.light, s.dpr);
+      var same = true;
+      for(var t=0;t<a.disp.data.length;t++){
+        if(a.disp.data[t] !== b.disp.data[t] || a.spec.data[t] !== b.spec.data[t]
+           || a.shade.data[t] !== b.shade.data[t]){ same = false; break; }
+      }
+      if(!same) bad.push({ s:s });
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+
+  prop('the displacement map does not depend on the light angle', SHAPES + `
+    var bad = [], N = 60;
+    for(var i=0;i<N;i++){
+      var s = shape();
+      var a = bakeFields(s.w, s.h, s.r, s.bevel, s.n,   7, s.dpr);
+      var b = bakeFields(s.w, s.h, s.r, s.bevel, s.n, 213, s.dpr);
+      var diff = 0;
+      for(var t=0;t<a.disp.data.length;t++) if(a.disp.data[t] !== b.disp.data[t]){ diff++; }
+      if(diff) bad.push({ s:s, differingBytes:diff });
+    }
+    return { n: N, bad: bad.slice(0,3),
+             why: 'so it never needs re-encoding when only the light moves' };
+  `);
+
+  prop('with the light straight up the highlight is left-right symmetric', SHAPES + `
+    var bad = [], N = 50;
+    for(var i=0;i<N;i++){
+      var s = shape();
+      var f = bakeFields(s.w, s.h, s.r, s.bevel, s.n, 90, s.dpr);
+      var sp = f.spec.data, sh = f.shade.data, worst = 0, at = null;
+      for(var y=0; y<f.ch; y++){
+        for(var x=0; x<f.cw>>1; x++){
+          var k = (y*f.cw + x)*4, m = (y*f.cw + (f.cw-1-x))*4;
+          var e = Math.max(Math.abs(sp[k+3]-sp[m+3]), Math.abs(sh[k+3]-sh[m+3]));
+          if(e > worst){ worst = e; at = {x:x, y:y}; }
+        }
+      }
+      if(worst > 1) bad.push({ s:s, worst:worst, at:at });
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+
+  prop('the refraction pushes opposite ways on opposite edges', SHAPES + `
+    var bad = [], N = 50;
+    for(var i=0;i<N;i++){
+      var s = shape();
+      var f = bakeFields(s.w, s.h, s.r, s.bevel, s.n, s.light, s.dpr);
+      var y = f.ch >> 1, d = f.disp.data;
+      var left  = d[(y*f.cw + 1)*4];
+      var right = d[(y*f.cw + f.cw - 2)*4];
+      /* a convex edge bends the two sides towards each other */
+      if(!((left - 128) * (right - 128) <= 0)) bad.push({ s:s, left:left, right:right });
+    }
+    return { n: N, bad: bad.slice(0,3) };
+  `);
+}
+
+/* ================================================================== */
+
+async function machine(ctx){
+  group('bake queue and element lifecycle — random action sequences');
+
+  const { win } = ctx;
+
+  /* Anything the user can actually do, in any order. */
+  const ACTIONS = `
+    window.__act = function(k){
+      var doc = document;
+      var slider = function(id, v){ var s = doc.getElementById(id); s.value = v;
+        s.dispatchEvent(new Event('input')); };
+      var acts = [
+        function(){ slider('bev', ri(4, 60)); },
+        function(){ slider('rad', ri(8, 56)); },
+        function(){ slider('light', ri(0, 359)); },
+        function(){ slider('ref', ri(0, 130)); },
+        function(){ slider('ab', (rnd()*0.5).toFixed(2)); },
+        function(){ slider('rim', (rnd()).toFixed(2)); },
+        function(){ slider('leg', (rnd()).toFixed(2)); },
+        function(){ doc.getElementById('togChroma').click(); },
+        function(){ doc.getElementById('togSq').click(); },
+        function(){ doc.getElementById('togRT').click(); },
+        function(){ doc.querySelectorAll('.dock .app')[ri(0,5)].click(); },
+        function(){ closeMenu(); },
+        function(){ run(3); },
+        function(){ run(2); },
+        function(){ var g = sheets[ri(0, sheets.length-1)]; g && g.setMoving && g.setMoving(rnd() < .5); },
+        function(){ var el = doc.querySelector(['.clock','.card','.pill','.dock'][ri(0,3)]);
+                    if(!el) return;
+                    var b = el.getBoundingClientRect();
+                    var p = function(t, x, y){ el.dispatchEvent(new PointerEvent(t,
+                      { bubbles:true, clientX:x, clientY:y, pointerId:1 })); };
+                    p('pointerdown', b.left+10, b.top+10);
+                    p('pointermove', b.left+10+ri(0,120), b.top+10+ri(0,90));
+                    if(rnd() < .8) p('pointerup', b.left+40, b.top+40);
+                    else p('pointercancel', b.left+40, b.top+40); },
+      ];
+      acts[k % acts.length]();
+    };
+  `;
+
+  /* What must be true once everything has settled, whatever was done. */
+  const INVARIANTS = `
+    window.__check = function(){
+      var bad = [];
+      var defs = document.getElementById('lg-defs');
+
+      if(waiting.size)      bad.push('waiting still holds ' + waiting.size);
+      if(pendingJobs.size)  bad.push('pendingJobs still holds ' + pendingJobs.size);
+      if(backlog.length)    bad.push('backlog still holds ' + backlog.length);
+      if(inFlight !== null) bad.push('a job is still in flight: ' + inFlight);
+
+      var live = sheets.filter(function(g){ return !g.dead; });
+      if(live.length !== sheets.length) bad.push('a dead element is still in sheets');
+      if(defs.children.length !== sheets.length)
+        bad.push('defs has ' + defs.children.length + ' filters for ' + sheets.length + ' elements');
+
+      var seen = {};
+      sheets.forEach(function(g){
+        if(seen[g.id]) bad.push('two elements share filter id ' + g.id);
+        seen[g.id] = 1;
+        if(!document.getElementById(g.id)) bad.push(g.id + ' has no filter node');
+
+        var m = g.metrics();
+        if(m.hidden) return;
+
+        if(!g.maps){ bad.push(g.id + ' is visible with no maps'); return; }
+
+        var key = g.bakeKey !== undefined ? g.bakeKey : g.geoSig;
+        var cached = mapCache.get(key);
+        if(cached && g.maps !== cached)
+          bad.push(g.id + ' holds maps that are not the ones for the shape it wants');
+
+        var node = document.getElementById(g.id);
+        var img = node.querySelector('feImage');
+        if(!img) bad.push(g.id + ' has a filter with no feImage');
+        else if(img.getAttribute('href') !== g.maps.disp)
+          bad.push(g.id + ' paints a displacement map it is not holding');
+
+        var bf = g.el.style.backdropFilter || '';
+        if(bf.indexOf('url(') >= 0 && bf.indexOf(g.id) < 0)
+          bad.push(g.id + ' points at somebody else\\'s filter');
+      });
+      return bad;
+    };
+  `;
+
+  win.eval(RND + ACTIONS + INVARIANTS);
+
+  const settle = async ()=>{
+    const t0 = performance.now();
+    for(;;){
+      if(ev('waiting.size') === 0 && ev('backlog.length') === 0 && ev('inFlight') === null) return true;
+      if(performance.now() - t0 > 9000) return false;
+      await tick();
+    }
+  };
+
+  const RUNS = 40, STEPS = 9;
+  const broken = [];
+  let ran = 0, timedOut = 0;
+
+  for(let r = 0; r < RUNS; r++){
+    const seq = [];
+    for(let s = 0; s < STEPS; s++) seq.push(ev('ri(0, 999)'));
+    ev('(function(){ var q = ' + JSON.stringify(seq) + '; for(var i=0;i<q.length;i++) __act(q[i]); })()');
+    ev('closeMenu()');
+    await flush();
+    if(!await settle()){ timedOut++; continue; }
+    ev('run(3)');
+    if(!await settle()){ timedOut++; continue; }
+    ran++;
+    sum.textContent = 'action sequences ' + ran + '/' + RUNS + '…';
+    const bad = ev('__check()');
+    if(bad.length && broken.length < 3) broken.push({ seq, bad });
+    else if(bad.length) broken.push({ seq: 'omitted', bad });
+  }
+
+  line(broken.length ? 'fail' : 'ok',
+       'any sequence of user actions settles with every invariant intact',
+       ran * STEPS,
+       broken.length
+         ? broken.length + ' of ' + ran + ' runs broke, first: ' + JSON.stringify(broken[0].bad.slice(0,2))
+           + ' after ' + JSON.stringify(broken[0].seq)
+         : ran + ' runs' + (timedOut ? ', ' + timedOut + ' timed out' : ''));
+
+  if(timedOut) line('fail', 'every run settles inside nine seconds', RUNS, timedOut + ' runs never settled');
+  else line('ok', 'every run settles inside nine seconds', RUNS);
+
+  /* The queue must not grow with how long a drag is. */
+  const flood = ev(`(function(){
+    var real = baker ? baker.postMessage.bind(baker) : null;
+    if(!real) return { skip:true };
+    var posted = 0;
+    baker.postMessage = function(j){ posted++; real(j); };
+    var peak = 0;
+    for(var i=0;i<60;i++){
+      var s = document.getElementById('light'); s.value = i*6; s.dispatchEvent(new Event('input'));
+      run(3);
+      peak = Math.max(peak, backlog.length + waiting.size);
+    }
+    baker.postMessage = real;
+    return { posted: posted, peak: peak, elements: sheets.length };
+  })()`);
+
+  if(flood.skip) line('skip', 'a long drag does not grow the queue', null, 'no worker here');
+  else line(flood.peak <= flood.elements * 3 ? 'ok' : 'fail',
+    'the queue stays bounded however long the drag is', 60,
+    'peak ' + flood.peak + ' entries for ' + flood.elements + ' elements');
+
+  /* An element waiting its turn must actually get one. A queue keyed by shape
+     serves whoever asked first over and over and starves the rest; keyed by
+     element it cannot hold anyone twice, so a full pass reaches everybody. */
+  const fair = ev(`(function(){
+    var dup = 0, over = 0, peak = 0;
+    for(var i=0;i<25;i++){
+      var s = document.getElementById('light'); s.value = i*13; s.dispatchEvent(new Event('input'));
+      run(3);
+      if(new Set(backlog).size !== backlog.length) dup++;
+      if(backlog.length > sheets.length) over++;
+      peak = Math.max(peak, backlog.length);
+    }
+    return { dup: dup, over: over, peak: peak, elements: sheets.length };
+  })()`);
+
+  line(fair.dup === 0 && fair.over === 0 ? 'ok' : 'fail',
+    'no element is ever queued twice, and the queue never outgrows the panels', 25,
+    fair.dup ? fair.dup + ' rounds had an element queued twice'
+             : fair.over ? fair.over + ' rounds outgrew ' + fair.elements + ' elements'
+             : 'peak ' + fair.peak + ' of ' + fair.elements);
+
+  await settle();
+
+  await settle();
+  ev('run(3)');
+  await settle();
+
+  /* Menus come and go; the page must end up with exactly its own elements
+     again. Counted against the markup rather than against a snapshot: a
+     snapshot can be taken while an earlier menu is still on its way out. */
+  const churn = await (async ()=>{
+    ev('closeMenu()');
+    await wait(1200);
+    const base = ev("document.querySelectorAll('[data-glass]').length");
+    for(let i=0;i<12;i++){
+      ev(`document.querySelectorAll('.dock .app')[${i % 6}].click()`);
+      await flush();
+      ev('closeMenu()');
+    }
+    /* closeMenu drops the sheet on an animation, with a timer behind it */
+    await wait(1400);
+    await settle();
+    return { base: base,
+             defs: ev("document.getElementById('lg-defs').children.length"),
+             sheets: ev('sheets.length') };
+  })();
+
+  line(churn.sheets === churn.base && churn.defs === churn.base ? 'ok' : 'fail',
+    'opening and closing menus leaves nothing behind', 12,
+    churn.base + ' glass elements in the markup, ended with ' +
+    churn.sheets + ' sheets and ' + churn.defs + ' filters');
+
+  /* Hidden elements must never be baked, at any window size. */
+  const sizes = [[1440,880],[1100,700],[820,620],[640,560],[520,420]];
+  let sizeBad = null;
+  for(const [w, h] of sizes){
+    ctx.f.style.width = w + 'px'; ctx.f.style.height = h + 'px';
+    ev('run(3)');
+    await flush();
+    if(!await settle()){ sizeBad = sizeBad || (w + 'x' + h + ' never settled'); continue; }
+    const bad = ev('__check()');
+    if(bad.length && !sizeBad) sizeBad = w + 'x' + h + ': ' + bad[0];
+  }
+  ctx.f.style.width = '1440px'; ctx.f.style.height = '880px';
+  ev('run(3)');
+  await settle();
+
+  line(sizeBad ? 'fail' : 'ok', 'the invariants hold at every window size', sizes.length, sizeBad || '');
+}
+
+/* ================================================================== */
+
+(async function main(){
+  const started = performance.now();
+  try{
+    const f = await frame('index.html');
+    const win = f.contentWindow;
+    ev = src => win.eval(src);
+    await wait(500);
+
+    await geometry();
+    await bakery();
+    await machine({ f, win });
+  }catch(err){
+    line('fail', 'harness crashed', null, String(err && err.stack || err));
+  }
+  const ms = Math.round(performance.now() - started);
+  sum.innerHTML = '<b>' + results.pass + ' hold</b> · ' + results.fail + ' broke · '
+    + results.skip + ' skip <span style="opacity:.45">(' + results.cases.toLocaleString()
+    + ' cases, ' + ms + ' ms, seed ' + SEED + ')</span>';
+  sum.style.color = results.fail ? '#ff8a92' : '#4ad07a';
+  document.title = (results.fail ? 'BROKE ' : 'ok ') + results.pass + '/' + (results.pass + results.fail);
+  window.__results = results;
+})();
+</script>
+</body>
+</html>
