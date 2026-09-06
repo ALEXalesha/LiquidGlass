@@ -1051,22 +1051,24 @@ class Glass{
     m = m || this.metrics();
     if(m.hidden || !this.maps) return;
 
-    /* While a panel actually moves, the backdrop under it changes every frame
-       and this whole chain is re-run every frame - on the cpu, because a chain
-       with feImage and feDisplacementMap does not go to the gpu.
+    /* Dragging one panel re-runs every panel's chain, every frame, on the
+       cpu: an element's backdrop is everything under it inside the backdrop
+       root, so anything moving in there invalidates all of them. A chain with
+       feImage and feDisplacementMap does not go to the gpu.
 
-       Measured by bench.html, dragging one panel, against 45 fps as shipped:
-       dropping the chromatic aberration and the rim glow is worth 12%, but
-       dropping the legibility curve is worth 4.2x on its own - a table driven
-       feComponentTransfer is by far the most expensive stage here, which is
-       the opposite of what a first noisy probe suggested. The ceiling with no
-       svg filter at all is 5.3x.
+       That is why simplifying only the panel under the pointer barely helps.
+       Measured by bench.html against the same baseline: simplifying the mover
+       alone is worth about 1.25x, simplifying every panel is worth 5.4x, and
+       giving the still ones no svg filter at all reaches the ceiling exactly
+       - the same number the page idles at. Between the individual stages only
+       the legibility curve stands clear of the run to run spread; the rest of
+       the small rows in that table are noise.
 
-       So all three decorations come off while the panel moves and the
-       refraction stays, which is the thing you drag a panel to look at. The
-       dimming is what keeps text readable over a bright backdrop, and text on
-       something in motion is not being read. */
-    const cheap  = this.moving && cfg.simplifyMoving;
+       So while any panel is being dragged all three decorations come off all
+       of them, and the refraction stays, which is the thing you drag a panel
+       to look at. The dimming is what keeps text readable over a bright
+       backdrop, and nobody is reading while the desk is moving. */
+    const cheap  = (this.moving || dragActive) && cfg.simplifyMoving;
     const chroma = cfg.chromatic && cfg.aberration > 0 && !cheap;
     const rim    = cheap ? 0 : cfg.rim;
     const leg    = cheap ? 0 : cfg.legibility;
@@ -1303,6 +1305,17 @@ function refresh(level){          // 1 = css, 2 = optics, 3 = geometry
    every sibling in the toolbar jump left, and a plain click was enough to do
    it. wait for real movement, then leave a spacer behind so the row holds. */
 const DRAG_SLOP = 4;
+
+/* Every panel pays for one panel moving, so every panel gets the cheap chain
+   for as long as the drag lasts. Flipping it rebuilds eight filter nodes,
+   which happens twice per drag rather than twice per frame. */
+let dragActive = false;
+function setDragActive(on){
+  on = !!on;
+  if(dragActive === on) return;
+  dragActive = on;
+  sheets.forEach(g=> g.optics());
+}
 let drag = null;
 
 function lift(d){
@@ -1328,6 +1341,7 @@ function lift(d){
   d.dy = d.startY - box.top;
   d.lifted = true;
   d.glass && d.glass.setMoving(true);
+  setDragActive(true);
 }
 
 document.querySelectorAll('.draggable').forEach(el=>{
@@ -1364,6 +1378,7 @@ document.querySelectorAll('.draggable').forEach(el=>{
   const release = ()=>{
     if(!drag || drag.el !== el) return;
     drag = null;
+    setDragActive(false);
     if(glass){ glass.setMoving(false); glass.squash(1, 1); glass.relight(); }
   };
   el.addEventListener('pointerup', release);

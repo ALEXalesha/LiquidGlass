@@ -324,9 +324,17 @@ async function cssSuite(){
       || { why: JSON.stringify({ rest, moving, back }) };
   });
 
-  await check('the panels that are not moving keep their full chain', ()=>{
-    const other = dragClock(()=> chainOf('lgf6'));
-    return (other.disp === 3 && other.rim) || { why: JSON.stringify(other) };
+  /* They do not get to keep it. One panel moving re-runs every chain every
+     frame, so the whole desk goes cheap for the length of the drag - worth
+     5.4x against 1.25x for simplifying the mover alone. */
+  await check('dragging one panel simplifies all of them', ()=>{
+    const rest = chainOf('lgf6');
+    const during = dragClock(()=> chainOf('lgf6'));
+    const after = chainOf('lgf6');
+    return (rest.disp === 3 && rest.rim
+            && during.disp === 1 && !during.rim
+            && after.disp === 3 && after.rim)
+      || { why: JSON.stringify({ rest, during, after }) };
   });
 
   await check('simplifying while moving can be switched off', ()=>{
