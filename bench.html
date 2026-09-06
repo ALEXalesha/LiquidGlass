@@ -16,6 +16,9 @@
   td{ padding:4px 14px 4px 0; vertical-align:baseline; white-space:nowrap; }
   td.n{ text-align:right; font-variant-numeric:tabular-nums; font-weight:700; }
   td.x{ text-align:right; opacity:.55; font-variant-numeric:tabular-nums; }
+  td.s{ opacity:.4; font-size:11.5px; font-variant-numeric:tabular-nums; }
+  .noise td.x{ opacity:.3; }
+  .noise td.s{ color:#c8a24a; opacity:.7; }
   .bar{ display:inline-block; height:9px; border-radius:2px; background:#3f6bff; vertical-align:middle; }
   .base .bar{ background:#8ab4ff; }
   .best .bar{ background:#4ad07a; }
@@ -80,7 +83,8 @@ const rows = new Map();
 PLAN.forEach(p=>{
   const tr = document.createElement('tr');
   tr.className = 'pending' + (p.base ? ' base' : '');
-  tr.innerHTML = '<td></td><td class="n">…</td><td>fps</td><td class="x"></td><td></td>';
+  tr.innerHTML = '<td></td><td class="n">…</td><td>fps</td><td class="x"></td>'
+                 + '<td class="s"></td><td></td>';
   tr.children[0].textContent = p.label;
   out.appendChild(tr);
   rows.set(p.key, tr);
@@ -174,7 +178,28 @@ window.__bench = async function(name, ms){
   });
 };`;
 
+/* One reading is not a measurement. Three runs of this bench disagreed by up
+   to 2.4x on the same row, which is more than most of the differences it was
+   being read for. So every configuration is sampled several times, in rounds
+   rather than back to back, and what gets reported is the median with the
+   spread beside it. A row whose spread overlaps the baseline's is marked as
+   noise instead of being dressed up as a ratio. */
+function median(a){
+  const v = a.filter(x=> x > 0).sort((x, y)=> x - y);
+  if(!v.length) return -1;
+  return v.length % 2 ? v[v.length >> 1]
+                      : Math.round((v[v.length/2 - 1] + v[v.length/2])/2);
+}
+
 function paint(){
+  PLAN.forEach(p=>{
+    const s = p.samples || [];
+    p.fps = s.length ? median(s) : undefined;
+    const good = s.filter(x=> x > 0);
+    p.lo = good.length ? Math.min(...good) : 0;
+    p.hi = good.length ? Math.max(...good) : 0;
+  });
+
   const done = PLAN.filter(p=> typeof p.fps === 'number' && p.fps > 0);
   const top = done.length ? Math.max(...done.map(p=> p.fps)) : 1;
   const base = PLAN.find(p=> p.base);
@@ -182,7 +207,12 @@ function paint(){
   PLAN.forEach(p=>{
     const tr = rows.get(p.key);
     if(typeof p.fps !== 'number') return;
-    tr.className = (p.base ? 'base' : '') + (p.fps === top && p.fps > 0 ? ' best' : '');
+
+    const overlaps = base && base.hi > 0 && !p.base && p.lo <= base.hi && base.lo <= p.hi;
+    tr.className = (p.base ? 'base' : '')
+                 + (p.fps === top && p.fps > 0 ? ' best' : '')
+                 + (overlaps ? ' noise' : '');
+
     if(p.fps < 0){
       tr.children[1].textContent = '—';
       tr.children[1].className = 'n dead';
@@ -190,9 +220,11 @@ function paint(){
       return;
     }
     tr.children[1].textContent = p.fps;
-    tr.children[3].textContent = base && typeof base.fps === 'number' && base.fps > 0 && !p.base
+    tr.children[3].textContent = base && base.fps > 0 && !p.base
       ? (p.fps/base.fps).toFixed(2).replace(/\.00$/, '') + '×' : '';
-    tr.children[4].innerHTML = '<i class="bar" style="width:' +
+    tr.children[4].textContent = p.lo === p.hi ? ''
+      : (overlaps ? 'noise ' : '') + p.lo + '–' + p.hi;
+    tr.children[5].innerHTML = '<i class="bar" style="width:' +
       Math.max(2, Math.round(p.fps/top*230)) + 'px"></i>';
   });
 }
@@ -231,21 +263,30 @@ function servedOverHttp(){
     return;
   }
 
-  for(const p of PLAN){
-    sum.textContent = 'measuring ' + p.label.trim() + '…';
-    p.fps = await win.__bench(p.key, 1600);
-    paint();
-    await new Promise(r=> setTimeout(r, 400));
+  const ROUNDS = 3;
+  PLAN.forEach(p=> p.samples = []);
+
+  /* round robin, so a machine that gets slower half way through spreads the
+     drift over every row instead of dumping it on the last few */
+  for(let r = 0; r < ROUNDS; r++){
+    for(const p of PLAN){
+      sum.textContent = 'round ' + (r + 1) + ' of ' + ROUNDS + ' · ' + p.label.trim() + '…';
+      p.samples.push(await win.__bench(p.key, 1200));
+      paint();
+      await new Promise(r2=> setTimeout(r2, 250));
+    }
   }
 
   const parked = PLAN.some(p=> p.fps < 0);
-  const base = PLAN.find(p=> p.base).fps;
+  const baseRow = PLAN.find(p=> p.base);
+  const base = baseRow.fps;
   const top  = PLAN[PLAN.length-1].fps;
   sum.innerHTML = parked
     ? '<span class="dead">requestAnimationFrame is parked in this tab.</span> ' +
       'Bring the window to the front, uncover it, and reload.'
-    : 'as shipped <b>' + base + ' fps</b> · ceiling without the svg filter <b>' +
-      top + ' fps</b> · headroom left <b>' + (top/base).toFixed(1) + '×</b>';
+    : 'median of ' + ROUNDS + ' rounds · as shipped <b>' + base + ' fps</b> ('
+      + baseRow.lo + '–' + baseRow.hi + ') · ceiling without the svg filter <b>'
+      + top + ' fps</b> · headroom left <b>' + (top/base).toFixed(1) + '×</b>';
   sum.style.color = parked ? '' : '#4ad07a';
   document.title = parked ? 'bench — not composited' : 'bench — ' + base + ' fps';
 })();
