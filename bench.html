@@ -133,15 +133,35 @@ window.__bench = async function(name, ms){
   await new Promise(r=> setTimeout(r, 400));
   await new Promise(r=> requestAnimationFrame(()=> requestAnimationFrame(r)));
 
-  const box = el.getBoundingClientRect();
+  /* Put it back where it started. Rounds used to begin from wherever the last
+     one left it, so the panel random walked off screen - and an element with
+     no backdrop under it has no filter to run, which reads as the ceiling in
+     every row and makes the whole table say there is nothing left to win. */
+  if(!window.__benchHome){
+    const b0 = el.getBoundingClientRect();
+    window.__benchHome = { left: b0.left, top: b0.top };
+  }
+  const home = window.__benchHome;
   el.style.position = 'fixed'; el.style.right = 'auto'; el.style.bottom = 'auto';
-  el.style.left = box.left + 'px'; el.style.top = box.top + 'px';
-  if(name !== 'idle') g.setMoving(true);
+  el.style.left = home.left + 'px'; el.style.top = home.top + 'px';
+  const box = { left: home.left, top: home.top };
+  const span = el.getBoundingClientRect();
+  /* an amplitude that keeps every corner on screen whatever the window is */
+  const ax = Math.max(20, Math.min(200, innerWidth  - span.width  - home.left - 12, home.left - 12));
+  const ay = Math.max(15, Math.min(80,  innerHeight - span.height - home.top  - 12, home.top  - 12));
+
+  if(name !== 'idle'){
+    g.setMoving(true);
+    /* the shipped behaviour is the whole desk going cheap, which only
+       happens through the drag itself - measure that, not a lone panel */
+    if(typeof setDragActive === 'function') setDragActive(true);
+    undo.push(()=>{ if(typeof setDragActive === 'function') setDragActive(false); });
+  }
 
   const byTransform = name === 'transform';
   const move = d =>{
     if(name === 'idle') return;
-    const dx = Math.sin(d/170)*200, dy = Math.cos(d/230)*80;
+    const dx = Math.sin(d/170)*ax, dy = Math.cos(d/230)*ay;
     if(byTransform){
       el.style.setProperty('--bx', dx + 'px');
       el.style.setProperty('--by', dy + 'px');
@@ -222,8 +242,12 @@ function paint(){
     tr.children[1].textContent = p.fps;
     tr.children[3].textContent = base && base.fps > 0 && !p.base
       ? (p.fps/base.fps).toFixed(2).replace(/\.00$/, '') + '×' : '';
+    /* a spread that reaches from a real cost up to the idle rate means some
+       rounds rendered nothing at all, not that the row is fast */
+    const idle = PLAN[0].fps;
+    const suspect = idle > 0 && p.hi >= idle && p.lo < idle*0.6;
     tr.children[4].textContent = p.lo === p.hi ? ''
-      : (overlaps ? 'noise ' : '') + p.lo + '–' + p.hi;
+      : (suspect ? 'unstable ' : overlaps ? 'noise ' : '') + p.lo + '–' + p.hi;
     tr.children[5].innerHTML = '<i class="bar" style="width:' +
       Math.max(2, Math.round(p.fps/top*230)) + 'px"></i>';
   });
