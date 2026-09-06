@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<!-- python -m http.server sends no cache headers, so chrome caches these
+     by heuristic and a harness happily re-runs a build you already fixed -->
+<meta http-equiv="cache-control" content="no-store">
 <title>Liquid Glass — checks</title>
 <style>
   body{ font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;

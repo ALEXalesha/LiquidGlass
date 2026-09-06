@@ -2,6 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<!-- python -m http.server sends no cache headers, so chrome caches these
+     by heuristic and a harness happily re-runs a build you already fixed -->
+<meta http-equiv="cache-control" content="no-store">
 <title>Liquid Glass — bench</title>
 <style>
   body{ font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
@@ -38,7 +41,7 @@
 <div id="sum">warming up…</div>
 <table><tbody id="out"></tbody></table>
 
-<iframe id="stage" src="index.html"></iframe>
+<iframe id="stage"></iframe>
 
 <div class="note">
   <code>backdrop-filter</code> with <code>blur()</code> and <code>saturate()</code> is
@@ -213,7 +216,10 @@ function servedOverHttp(){
 (async function go(){
   if(!servedOverHttp()) return;
   const frame = document.getElementById('stage');
-  await new Promise(r=> frame.addEventListener('load', r, { once:true }));
+  /* a bench that measures a cached build is worse than no bench */
+  const ready = new Promise(r=> frame.addEventListener('load', r, { once:true }));
+  frame.src = 'index.html?bench=' + Date.now();
+  await ready;
   const win = frame.contentWindow;
   await new Promise(r=> setTimeout(r, 1400));   // let the first bake land
 
