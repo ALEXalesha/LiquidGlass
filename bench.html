@@ -130,8 +130,13 @@ window.__bench = async function(name, ms){
   /* Changing a config rebuilds filter chains and makes chrome decode the data
      url pngs again. Counting that as the cost of a drag is how a row ends up
      claiming that removing a stage made things slower. Let it land first. */
+  const frames = (n, ms)=> Promise.race([
+    new Promise(r=>{ (function f(){ n-- > 0 ? requestAnimationFrame(f) : r(); })(); }),
+    new Promise(r=> setTimeout(r, ms)),
+  ]);
+
   await new Promise(r=> setTimeout(r, 400));
-  await new Promise(r=> requestAnimationFrame(()=> requestAnimationFrame(r)));
+  await frames(2, 1200);
 
   /* Put it back where it started. Rounds used to begin from wherever the last
      one left it, so the panel random walked off screen - and an element with
@@ -172,11 +177,14 @@ window.__bench = async function(name, ms){
   };
 
   /* a warm-up pass nobody counts */
-  await new Promise(res=>{
-    const t0 = performance.now();
-    (function f(){ const d = performance.now() - t0; move(d);
-      d < 300 ? requestAnimationFrame(f) : res(); })();
-  });
+  await Promise.race([
+    new Promise(res=>{
+      const t0 = performance.now();
+      (function f(){ const d = performance.now() - t0; move(d);
+        d < 300 ? requestAnimationFrame(f) : res(); })();
+    }),
+    new Promise(r=> setTimeout(r, 1800)),
+  ]);
 
   return new Promise(res=>{
     let n = 0; const t0 = performance.now();
