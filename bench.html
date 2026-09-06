@@ -65,6 +65,8 @@ const PLAN = [
   { key:'willchange', label:' + will-change: transform' },
   { key:'smallpad',   label:' + refraction 20, so a third of the filter pad' },
   { key:'noleg',      label:' + no legibility curve' },
+  { key:'allcheap',   label:' + every panel on the cheap chain, not just the mover' },
+  { key:'allplain',   label:' + every OTHER panel with no svg filter at all' },
   { key:'nofilter',   label:'no svg filter at all — the ceiling' },
 ];
 
@@ -84,9 +86,10 @@ PLAN.forEach(p=>{
 /* One runner, installed in the frame, so every configuration is measured by
    exactly the same loop and the numbers are comparable. */
 const RUNNER = `
-window.__bench = function(name, ms){
+window.__bench = async function(name, ms){
   const el = document.querySelector('.clock');
   const g  = sheets.find(s=> s.el === el);
+  const others = sheets.filter(s=> s.el !== el);
   const undo = [];
 
   if(name === 'full'){ cfg.simplifyMoving = false; undo.push(()=> cfg.simplifyMoving = true); }
@@ -103,6 +106,25 @@ window.__bench = function(name, ms){
     el.style.webkitBackdropFilter = el.style.backdropFilter;
     undo.push(()=> run(2));
   }
+  /* One panel moves, so in theory one chain re-runs. These two say whether
+     the still ones are being re-filtered every frame anyway. */
+  if(name === 'allcheap'){
+    others.forEach(o=> o.setMoving(true));
+    undo.push(()=> others.forEach(o=> o.setMoving(false)));
+  }
+  if(name === 'allplain'){
+    others.forEach(o=>{
+      o.el.style.backdropFilter = o.el.style.webkitBackdropFilter =
+        'blur(1.5px) saturate(170%)';
+    });
+    undo.push(()=> run(2));
+  }
+
+  /* Changing a config rebuilds filter chains and makes chrome decode the data
+     url pngs again. Counting that as the cost of a drag is how a row ends up
+     claiming that removing a stage made things slower. Let it land first. */
+  await new Promise(r=> setTimeout(r, 400));
+  await new Promise(r=> requestAnimationFrame(()=> requestAnimationFrame(r)));
 
   const box = el.getBoundingClientRect();
   el.style.position = 'fixed'; el.style.right = 'auto'; el.style.bottom = 'auto';
@@ -121,6 +143,13 @@ window.__bench = function(name, ms){
       el.style.top  = (box.top  + dy) + 'px';
     }
   };
+
+  /* a warm-up pass nobody counts */
+  await new Promise(res=>{
+    const t0 = performance.now();
+    (function f(){ const d = performance.now() - t0; move(d);
+      d < 300 ? requestAnimationFrame(f) : res(); })();
+  });
 
   return new Promise(res=>{
     let n = 0; const t0 = performance.now();
@@ -165,7 +194,24 @@ function paint(){
   });
 }
 
+/* Chrome hands every file:// document its own opaque origin, so a page
+   opened from disk cannot reach the frame it is driving. Say that plainly
+   instead of letting a cross origin error surface raw. */
+function servedOverHttp(){
+  if(location.protocol !== 'file:') return true;
+  sum.innerHTML = '<b style="color:#ff8a92">Opened from the file system.</b>'
+    + '<div style="font-size:12px;opacity:.75;margin-top:8px;line-height:1.7">'
+    + 'Chrome gives every <code>file://</code> page its own origin, so this one cannot '
+    + 'reach the page it is driving. Serve the folder and open it over http:'
+    + '<br><br><code>python -m http.server 8123</code>'
+    + '<br><br>then <code>http://localhost:8123/' + location.pathname.split('/').pop() + '</code>'
+    + '</div>';
+  document.title = 'needs http, not file://';
+  return false;
+}
+
 (async function go(){
+  if(!servedOverHttp()) return;
   const frame = document.getElementById('stage');
   await new Promise(r=> frame.addEventListener('load', r, { once:true }));
   const win = frame.contentWindow;
@@ -173,15 +219,17 @@ function paint(){
 
   try{ win.eval(RUNNER); }
   catch(err){
-    sum.innerHTML = '<span class="dead">could not reach the page: ' + err.message + '</span>';
+    sum.innerHTML = '<span class="dead">could not reach the page: ' + err.message + '</span>'
+      + '<div style="font-size:12px;opacity:.7;margin-top:6px">'
+      + 'If that mentions a cross origin frame, this page is not being served over http.</div>';
     return;
   }
 
   for(const p of PLAN){
     sum.textContent = 'measuring ' + p.label.trim() + '…';
-    p.fps = await win.__bench(p.key, 1300);
+    p.fps = await win.__bench(p.key, 1600);
     paint();
-    await new Promise(r=> setTimeout(r, 160));
+    await new Promise(r=> setTimeout(r, 400));
   }
 
   const parked = PLAN.some(p=> p.fps < 0);

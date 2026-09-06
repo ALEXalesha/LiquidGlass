@@ -584,7 +584,24 @@ async function machine(ctx){
 
 /* ================================================================== */
 
+/* Chrome hands every file:// document its own opaque origin, so a page
+   opened from disk cannot reach the frame it is driving. Say that plainly
+   instead of letting a cross origin error surface raw. */
+function servedOverHttp(){
+  if(location.protocol !== 'file:') return true;
+  sum.innerHTML = '<b style="color:#ff8a92">Opened from the file system.</b>'
+    + '<div style="font-size:12px;opacity:.75;margin-top:8px;line-height:1.7">'
+    + 'Chrome gives every <code>file://</code> page its own origin, so this one cannot '
+    + 'reach the page it is driving. Serve the folder and open it over http:'
+    + '<br><br><code>python -m http.server 8123</code>'
+    + '<br><br>then <code>http://localhost:8123/' + location.pathname.split('/').pop() + '</code>'
+    + '</div>';
+  document.title = 'needs http, not file://';
+  return false;
+}
+
 (async function main(){
+  if(!servedOverHttp()) return;
   const started = performance.now();
   try{
     const f = await frame('index.html');
