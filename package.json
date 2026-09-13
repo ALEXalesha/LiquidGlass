@@ -1,0 +1,96 @@
+{
+  "name": "liquid-glass",
+  "productName": "Liquid Glass",
+  "version": "1.0.0",
+  "description": "iOS 26 Liquid Glass rebuilt on the web: CSS + SVG filters and a WebGL2 shader",
+  "author": "ALEXaloysha",
+  "private": true,
+  "desktopName": "liquid-glass.desktop",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "selftest": "electron . --selftest",
+    "test": "node --test electron/shell.test.js",
+    "icon": "node build/icon.js",
+    "dist": "electron-builder --win",
+    "dist:linux": "electron-builder --linux",
+    "dist:mac": "electron-builder --mac"
+  },
+  "build": {
+    "appId": "local.alexaloysha.liquidglass",
+    "productName": "Liquid Glass",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "package.json",
+      "electron/main.js",
+      "electron/serve.js",
+      "electron/selftest.js",
+      "electron/tabs.js",
+      "electron/tabs.html",
+      "electron/tabs-preload.js",
+      "index.html",
+      "webgl.html",
+      "tests.html",
+      "invariants.html",
+      "bench.html"
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "electronLanguages": [
+      "en-US",
+      "ru"
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "Liquid Glass",
+      "artifactName": "LiquidGlass-${version}-setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "LiquidGlass-${version}-portable.${ext}"
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Graphics",
+      "target": [
+        "tar.gz"
+      ],
+      "syncDesktopName": true,
+      "artifactName": "LiquidGlass-${version}-${arch}.${ext}"
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "category": "public.app-category.graphics-design",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "artifactName": "LiquidGlass-${version}-${arch}.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3"
+  }
+}

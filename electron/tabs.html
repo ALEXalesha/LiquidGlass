@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>Liquid Glass tabs</title>
+<style>
+  :root{ color-scheme: dark; }
+  html, body{ height:100%; }
+  body{ margin:0; padding:0 8px; box-sizing:border-box; display:flex; align-items:center; gap:2px;
+        background:linear-gradient(#16161f, #0f0f16); border-bottom:1px solid #23232e;
+        color:#dfe3ea; font:12.5px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+        user-select:none; overflow:hidden; }
+  #tabs{ display:flex; align-items:center; gap:2px; min-width:0; overflow:hidden; }
+  button{ font:inherit; color:inherit; background:none; border:0; height:28px; padding:0 13px;
+          border-radius:14px; cursor:pointer; display:flex; align-items:center; gap:7px; flex:none;
+          opacity:.6; white-space:nowrap; transition:background .15s, opacity .15s; }
+  button:hover{ background:rgba(255,255,255,.06); opacity:.9; }
+  button[aria-selected="true"]{ opacity:1; background:rgba(255,255,255,.12);
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.16), inset 0 -1px 0 rgba(0,0,0,.3); }
+  button:focus-visible{ outline:2px solid #8ab4ff; outline-offset:1px; }
+  .sep{ width:1px; height:16px; background:#2c2c3a; margin:0 6px; flex:none; }
+  .dot{ width:7px; height:7px; border-radius:50%; display:none; }
+  .dot.ok{ display:block; background:#4ad07a; }
+  .dot.fail{ display:block; background:#ff5f6d; }
+  #reload{ margin-left:auto; font-size:15px; padding:0 10px; }
+</style>
+</head>
+<body>
+<div id="tabs" role="tablist" aria-label="Pages"></div>
+<button id="reload" title="Reload this tab (Ctrl+R)" aria-label="Reload this tab">&#8635;</button>
+<script>
+"use strict";
+
+const strip = document.getElementById('tabs');
+document.getElementById('reload').addEventListener('click', () => shell.reload());
+
+function tab(p, i, active, status){
+  const b = document.createElement('button');
+  b.setAttribute('role', 'tab');
+  b.setAttribute('aria-selected', String(p.file === active));
+  b.dataset.page = p.file;
+  b.title = p.label + '  ·  Ctrl+' + (i + 1);
+  const dot = document.createElement('span');
+  dot.className = 'dot ' + (status[p.file] || '');
+  b.append(dot, p.label);
+  b.addEventListener('click', () => shell.show(p.file));
+  return b;
+}
+
+shell.onState(({ pages, active, status }) => {
+  strip.replaceChildren(...pages.flatMap((p, i) => {
+    const b = tab(p, i, active, status);
+    if(i !== 2) return [b];
+    const sep = document.createElement('span');
+    sep.className = 'sep';
+    return [sep, b];
+  }));
+});
+</script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 .remember/
 node_modules/
+dist/
 .DS_Store
 blender/out/glass_solid.png
 blender/out/glass_ref.png
