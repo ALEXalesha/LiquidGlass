@@ -5,7 +5,6 @@
   "description": "iOS 26 Liquid Glass rebuilt on the web: CSS + SVG filters and a WebGL2 shader",
   "author": "ALEXaloysha",
   "private": true,
-  "desktopName": "liquid-glass.desktop",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
@@ -13,7 +12,6 @@
     "test": "node --test electron/shell.test.js",
     "icon": "node build/icon.js",
     "dist": "electron-builder --win",
-    "dist:linux": "electron-builder --linux",
     "dist:mac": "electron-builder --mac"
   },
   "build": {
@@ -69,15 +67,6 @@
     },
     "portable": {
       "artifactName": "LiquidGlass-${version}-portable.${ext}"
-    },
-    "linux": {
-      "icon": "build/icon.png",
-      "category": "Graphics",
-      "target": [
-        "tar.gz"
-      ],
-      "syncDesktopName": true,
-      "artifactName": "LiquidGlass-${version}-${arch}.${ext}"
     },
     "mac": {
       "icon": "build/icon.png",
