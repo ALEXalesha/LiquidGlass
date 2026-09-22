@@ -1,4 +1,18 @@
+<div align="center">
+
 # Liquid Glass
+
+**Материал Liquid Glass из iOS 26 / macOS 26, повторённый в браузере двумя разными способами: CSS с SVG-фильтрами и собственный шейдер на WebGL2. Без зависимостей и сборки - открыл файл и работает.**
+
+[Открыть в браузере](https://alexalesha.github.io/LiquidGlass/) &nbsp;·&nbsp; [Скачать для Windows](https://github.com/ALEXalesha/LiquidGlass/releases/latest) &nbsp;·&nbsp; [English version of this file](README.md)
+
+[![CI](https://github.com/ALEXalesha/LiquidGlass/actions/workflows/ci.yml/badge.svg)](https://github.com/ALEXalesha/LiquidGlass/actions/workflows/ci.yml)
+[![Pages](https://github.com/ALEXalesha/LiquidGlass/actions/workflows/pages.yml/badge.svg)](https://alexalesha.github.io/LiquidGlass/)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+<img src="docs/screenshots/css-svg.png" width="900" alt="Liquid Glass: версия на CSS и SVG-фильтрах">
+
+</div>
 
 Материал Liquid Glass из iOS 26 / macOS 26, повторённый в браузере двумя разными способами.
 
@@ -698,3 +712,15 @@ blender -b -P blender/glass_ref.py -- --sweep
 **Веб на CSS и SVG.** Это `index.html`. Потолок такой: смещение по карте, разделение каналов, запечённое освещение. Дальше упирается в отсутствие программируемого шейдера. Выглядит убедительно, но физики в этом нет - только её имитация.
 
 Практический вывод. Если цель - интерфейс приложения под Apple, берите SwiftUI, там всё готово. Если нужен веб и важна достоверность - `webgl.html`, но фон придётся рисовать в тот же канвас. Если нужен веб поверх обычного DOM без переписывания вёрстки - `index.html`, это потолок.
+
+## Скриншоты собираются программой
+
+`tools/make-screenshots.js` открывает страницы в Electron - по той же схеме `app://` и через тот же `electron/serve.js`, что и приложение, - ждёт, пока стекло построит свои текстуры, а WebGL нарисует первый кадр, и снимает саму страницу через `capturePage()`. Снимок экрана не годится: окно может оказаться позади других, и в кадр попадёт чужое содержимое.
+
+```bash
+npx electron tools/make-screenshots.js
+```
+
+## Лицензия
+
+MIT, файл [LICENSE](LICENSE).
