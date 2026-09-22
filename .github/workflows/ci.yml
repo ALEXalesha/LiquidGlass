@@ -1,0 +1,33 @@
+# Проверки на каждый пуш.
+#
+# Здесь только проверки оболочки (24 штуки): маршрутизация схемы app://,
+# политика безопасности и вкладки - им экран не нужен.
+#
+# Полный прогон - npm run selftest - гоняет в настоящем окне обе страницы-стенда
+# (49 проверок и 31 инвариант). В CI его нет намеренно: половина его смысла в
+# бюджетах по кадрам, а вкладка, которая не композитится, паркует
+# requestAnimationFrame, и любой замер вернёт ноль. Стенд в таком случае честно
+# ставит пропуск - но тогда и проверять в CI было бы нечего.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: Проверки оболочки
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 24 проверки
+        run: node --test electron/shell.test.js
