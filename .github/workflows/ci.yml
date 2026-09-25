@@ -29,5 +29,5 @@ jobs:
         with:
           node-version: "22"
 
-      - name: 24 проверки
+      - name: Проверки
         run: node --test electron/shell.test.js
