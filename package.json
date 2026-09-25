@@ -1,7 +1,7 @@
 {
   "name": "liquid-glass",
   "productName": "Liquid Glass",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "iOS 26 Liquid Glass rebuilt on the web: CSS + SVG filters and a WebGL2 shader",
   "author": "ALEXaloysha",
   "private": true,
@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "selftest": "electron . --selftest",
-    "test": "node --test electron/shell.test.js",
+    "test": "node --test electron/shell.test.js electron/window-state.test.js",
     "icon": "node build/icon.js",
     "dist": "electron-builder --win",
     "dist:mac": "electron-builder --mac"
@@ -29,6 +29,7 @@
       "electron/tabs.js",
       "electron/tabs.html",
       "electron/tabs-preload.js",
+      "electron/window-state.js",
       "index.html",
       "webgl.html",
       "tests.html",

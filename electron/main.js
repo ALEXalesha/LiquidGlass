@@ -3,6 +3,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { SCHEME, ORIGIN, PAGES, pageFor, respond } = require('./serve');
 const { cycle, tabForKey, statusFor, titleFor } = require('./tabs');
+const WindowState = require('./window-state');
 
 const SELFTEST = process.argv.includes('--selftest');
 const ROOT = path.join(__dirname, '..');
@@ -87,13 +88,23 @@ function show(file){
   v.webContents.focus();
 }
 
+/* Size and place between runs (1.1.0): <userData>\window-state.json. What was saved is
+   checked against today's monitors: a monitor unplugged - centred on the main one,
+   larger than the screen - shrunk, the tab bar always reachable. */
+const windowStatePath = () => path.join(app.getPath('userData'), 'window-state.json');
+
 function openShell(first){
-  const area = screen.getPrimaryDisplay().workAreaSize;
+  const primary = screen.getPrimaryDisplay();
+  const area = primary.workAreaSize;
+  const opts = { width: Math.min(1440, area.width), height: Math.min(900, area.height), minWidth: 480, minHeight: 360 };
+  const areas = [primary, ...screen.getAllDisplays().filter(d => d.id !== primary.id)].map(d => d.workArea);
+  const placed = WindowState.restore(WindowState.load(windowStatePath()), areas, opts);
   const win = new BaseWindow({
-    width: Math.min(1440, area.width),
-    height: Math.min(900, area.height),
-    minWidth: 480,
-    minHeight: 360,
+    ...(placed.x !== undefined ? { x: placed.x, y: placed.y } : {}),
+    width: placed.width,
+    height: placed.height,
+    minWidth: opts.minWidth,
+    minHeight: opts.minHeight,
     backgroundColor: BG,
     autoHideMenuBar: true,
     title: 'Liquid Glass',
@@ -110,6 +121,11 @@ function openShell(first){
   wc.on('did-finish-load', pushState);
   wc.loadFile(path.join(__dirname, 'tabs.html'));
   win.on('resize', layout);
+  if(placed.maximized) win.maximize();
+  /* written after a move or resize (the events come at the end of the gesture) and on
+     close, through a temporary file */
+  const remember = () => { if(!win.isDestroyed() && !win.isMinimized()) WindowState.save(windowStatePath(), WindowState.capture(win)); };
+  for(const event of ['resized', 'moved', 'maximize', 'unmaximize', 'close']) win.on(event, remember);
   /* views are not torn down with the window on their own */
   win.on('closed', () => {
     for(const v of [bar, ...shell.views.values()]) v.webContents.close();

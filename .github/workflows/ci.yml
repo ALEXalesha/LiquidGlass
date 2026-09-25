@@ -30,4 +30,4 @@ jobs:
           node-version: "22"
 
       - name: Проверки
-        run: node --test electron/shell.test.js
+        run: node --test electron/shell.test.js electron/window-state.test.js
