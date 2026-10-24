@@ -6,16 +6,13 @@
 
 [Открыть в браузере](https://alexalesha.github.io/LiquidGlass/) &nbsp;·&nbsp; [Скачать для Windows](https://github.com/ALEXalesha/LiquidGlass/releases/latest) &nbsp;·&nbsp; [English version of this file](README.md)
 
-[![CI](https://github.com/ALEXalesha/LiquidGlass/actions/workflows/ci.yml/badge.svg)](https://github.com/ALEXalesha/LiquidGlass/actions/workflows/ci.yml)
-[![Pages](https://github.com/ALEXalesha/LiquidGlass/actions/workflows/pages.yml/badge.svg)](https://alexalesha.github.io/LiquidGlass/)
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Status](https://img.shields.io/badge/status-stable-brightgreen)](#) [![Release](https://img.shields.io/github/v/release/ALEXalesha/LiquidGlass)](https://github.com/ALEXalesha/LiquidGlass/releases/latest) [![CI](https://github.com/ALEXalesha/LiquidGlass/actions/workflows/ci.yml/badge.svg)](https://github.com/ALEXalesha/LiquidGlass/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?logo=javascript&logoColor=black)](https://developer.mozilla.org/docs/Web/JavaScript) [![WebGL2](https://img.shields.io/badge/WebGL2-990000?logo=webgl&logoColor=white)](https://developer.mozilla.org/docs/Web/API/WebGL_API) [![Electron](https://img.shields.io/badge/Electron-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/) [![Website](https://img.shields.io/badge/Website-open-0A84FF?logo=googlechrome&logoColor=white)](https://alexalesha.github.io/LiquidGlass/) [![Built with Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-D97757?logo=claude&logoColor=white)](https://claude.com/claude-code)
+
+Код, тесты и документация этого проекта написаны Claude (Anthropic) в Claude Code. Идеи, проверка и решения - Алексей.
 
 <img src="docs/screenshots/css-svg.png" width="900" alt="Liquid Glass: версия на CSS и SVG-фильтрах">
 
 </div>
-
-[![Built with Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-D97757?logo=claude&logoColor=white)](https://claude.com/claude-code)
-Код, тесты и документация этого проекта написаны Claude (Anthropic) в Claude Code. Идеи, проверка и решения - Алексей.
 
 Материал Liquid Glass из iOS 26 / macOS 26, повторённый в браузере двумя разными способами.
 
