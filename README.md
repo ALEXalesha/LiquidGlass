@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="build/icon.png" width="96" alt="">
+
 # Liquid Glass
 
 **The Liquid Glass material from iOS 26 / macOS 26, rebuilt in the browser two different ways: CSS with SVG filters, and a hand-written WebGL2 shader. No dependencies, no build step - open the file and it runs.**
